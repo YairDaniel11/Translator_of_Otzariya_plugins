@@ -384,19 +384,24 @@ def write_dictionary(plugin_dir, lang, pairs):
              "   המפתחות הם מחרוזות המקור בעברית; מחרוזת שאינה כאן",
              "   נשארת בעברית (נפילה טבעית). */",
              "window.TRANSLATIONS = window.TRANSLATIONS || {};",
-             f"window.TRANSLATIONS.{lang} = {{"]
+             f"window.TRANSLATIONS[{json.dumps(lang)}] = {{"]
+    #  המחרוזות נכתבות דרך json.dumps: המבנה של JSON תקף כמובאה ב-JS,
+    #  והוא מבריח נכון גרש, מקף-על, שורה חדשה ותווי בקרה. ציטוט ידני
+    #  כאן שבר את כל הקובץ על תרגום אחד שהכיל גרש (Se'if, l'auteur),
+    #  ואז window.TRANSLATIONS לא נוצר כלל והממשק נשאר בעברית.
     for he in sorted(pairs):
         en = pairs[he]
         if not en or en == he:
             continue
-        k = he.replace("\\", "\\\\").replace("'", "\'")
-        v = str(en).replace("\\", "\\\\").replace("'", "\'")
-        lines.append(f"  '{k}': '{v}',")
+        lines.append("  %s: %s," % (json.dumps(he, ensure_ascii=False),
+                                    json.dumps(str(en), ensure_ascii=False)))
     if lines[-1].endswith(","):
         lines[-1] = lines[-1][:-1]
     lines.append("};")
+    #  U+2028/29 הם סוף-שורה ב-JS אך תווים רגילים ב-JSON
+    body = "\n".join(lines).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     io.open(os.path.join(d, f"{lang}.js"), "w", encoding="utf-8",
-            newline="\n").write("\n".join(lines) + "\n")
+            newline="\n").write(body + "\n")
 
 
 #  סימון גבולות ההזרקה, כדי שנוכל להסיר אותה במלואה בריצה חוזרת.
@@ -433,9 +438,12 @@ def inject_runtime(plugin_dir, runtime_js, lang, entry):
     # אין קוד אתחול כאן: המנוע מאתחל את עצמו וממתין שגשר אוצריא
     # ייטען. בדיקת "if (window.Otzaria)" בשלב הזה נכשלה תמיד, כי
     # המנוע נטען לפני otzaria_plugin.js.
+    #  המילון נטען *לפני* המנוע. בסדר ההפוך המנוע קרא את
+    #  window.TRANSLATIONS לפני שהיה קיים, קבע dict=null, והממשק
+    #  נשאר בעברית — במיוחד בחבילה הנעולה לשפה, שמחילה מיד.
     tags = (f"{_MARK_START}\n"
-            f'<script src="i18n/i18n.js"></script>\n'
             f'<script src="i18n/{lang}.js"></script>\n'
+            f'<script src="i18n/i18n.js"></script>\n'
             f"{_MARK_END}\n")
     i = s.find("<script")
     s = (s[:i] + tags + s[i:]) if i != -1 else s.replace("</body>", tags + "</body>")
@@ -547,18 +555,30 @@ def _force_runtime(runtime_path, lang):
         "  /* ── חבילה נעולה לשפה ──\n"
         "     השפה קבועה, ולכן מחילים מיד ואיננו תלויים בטעינת גשר\n"
         "     אוצריא או באירוע plugin.boot. כך החבילה עובדת גם\n"
-        "     ב-0.9.96, שאינה מדווחת על שפת הממשק. */\n"
+        "     ב-0.9.96, שאינה מדווחת על שפת הממשק.\n"
+        "\n"
+        "     שני תנאים חייבים להתקיים בהחלה: המילון נטען, ו-body\n"
+        "     קיים. בלי ההמתנה עליהם הקריאה מתבצעת פעם אחת בטרם\n"
+        f"     זמנה, dict נשאר null, והממשק נשאר בעברית. */\n"
         "  (function applyForced() {\n"
-        f"    setLanguage('{lang}', '{direction}');\n"
-        "    if (!document.body) {\n"
-        "      document.addEventListener('DOMContentLoaded', function () {\n"
-        f"        setLanguage('{lang}', '{direction}');\n"
+        f"    var LANG = '{lang}', DIR = '{direction}', waited = 0;\n"
+        "    function ready() {\n"
+        "      var tbl = global.TRANSLATIONS;\n"
+        "      return !!(tbl && tbl[LANG] && document.body);\n"
+        "    }\n"
+        "    function go() {\n"
+        "      setLanguage(LANG, DIR);\n"
+        "      /* רינדור מאוחר (מסגרות, טעינה א-סינכרונית) — סריקה חוזרת */\n"
+        "      [300, 1000, 2500].forEach(function (ms) {\n"
+        "        setTimeout(function () { try { apply(); } catch (e) {} }, ms);\n"
         "      });\n"
         "    }\n"
-        "    /* רינדור מאוחר (מסגרות, טעינה א-סינכרונית) — סריקה חוזרת */\n"
-        "    [300, 1000, 2500].forEach(function (ms) {\n"
-        "      setTimeout(function () { try { apply(); } catch (e) {} }, ms);\n"
-        "    });\n"
+        "    if (ready()) { go(); return; }\n"
+        "    var timer = setInterval(function () {\n"
+        "      waited += 50;\n"
+        "      if (ready()) { clearInterval(timer); go(); }\n"
+        "      else if (waited >= 10000) clearInterval(timer);\n"
+        "    }, 50);\n"
         "  })();\n")
     return s.replace("\n  autoInit();\n", forced).encode("utf-8")
 

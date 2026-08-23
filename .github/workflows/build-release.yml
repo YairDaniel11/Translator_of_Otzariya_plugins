@@ -1,0 +1,96 @@
+# בונה EXE של מתרגם תוספי אוצריא ומפרסם אותו כ-Release,
+# בכל דחיפה שנוגעת בקוד התוכנה.
+#
+# שם הנכס ב-Release הוא באנגלית במכוון: GitHub מחליף תווים שאינם
+# ASCII בשם קובץ הנכס בנקודות, ולכן שם עברי היה יורד כ-"....exe".
+name: build-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'i18n_runtime.js'
+      - 'i18n-shared/**'
+      - '.github/workflows/build-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: התקנת PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: בדיקת שפיות — הליבה נטענת והמילון תקף
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python - <<'PY'
+          import io, os, tempfile, translator_core as c
+          d = tempfile.mkdtemp()
+          # גרש ומקף-על בערכים — בדיוק מה ששבר את המילון בעבר
+          c.write_dictionary(d, "en", {"סעיף": "Se'if", "נתיב": 'C:\\a "b"'})
+          js = io.open(os.path.join(d, "i18n", "en.js"), encoding="utf-8").read()
+          assert '"Se\'if"' in js, js
+          print("dictionary OK")
+          PY
+
+      - name: קריאת מספר הגרסה מ-gui.py
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path gui.py -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=v$v-build${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: בניית ה-EXE
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name OtzariaPluginTranslator
+          --add-data "i18n_runtime.js;."
+          --hidden-import tkinter.simpledialog
+          gui.py
+
+      - name: אימות שהנתונים נארזו בתוך ה-EXE
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist/OtzariaPluginTranslator.exe')) { throw 'ה-EXE לא נבנה' }
+          $size = (Get-Item 'dist/OtzariaPluginTranslator.exe').Length
+          Write-Output "exe size: $size"
+          if ($size -lt 3MB) { throw "ה-EXE קטן מהצפוי ($size בתים) — הבנייה כנראה חלקית" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OtzariaPluginTranslator-${{ steps.ver.outputs.version }}
+          path: dist/OtzariaPluginTranslator.exe
+          if-no-files-found: error
+
+      - name: פרסום Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: מתרגם תוספי אוצריא ${{ steps.ver.outputs.version }} (build ${{ github.run_number }})
+          body: |
+            נבנה אוטומטית מ-`${{ github.sha }}`.
+
+            **מתרגם תוספי אוצריא** — גרסה ${{ steps.ver.outputs.version }}
+            הורדה: `OtzariaPluginTranslator.exe` (Windows, קובץ בודד, ללא התקנה).
+          files: dist/OtzariaPluginTranslator.exe
+          draft: false
+          prerelease: false
