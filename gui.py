@@ -112,7 +112,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"מתרגם תוספי אוצריא — גרסה {VERSION}")
-        self.geometry("980x680")
+        self.geometry("1080x720")
+        self.minsize(940, 600)
         cfg = load_cfg()
 
         # נתיב שנשמר מריצה קודמת עשוי להיות תיקיית פריסה זמנית שנמחקה
@@ -151,14 +152,16 @@ class App(tk.Tk):
     def _build(self):
         pad = dict(padx=8, pady=4)
 
+        #  סדר האריזה הוא סדר הקריאה: הכפתורים נארזים ראשונים ולכן
+        #  יושבים בקצה הימני, ושדה הנתיב נמשך משם שמאלה
         top = ttk.LabelFrame(self, text=" תוסף ")
         top.pack(fill="x", **pad)
-        ttk.Entry(top, textvariable=self.plugin_dir).pack(
-            side="right", fill="x", expand=True, padx=6, pady=6)
         ttk.Button(top, text="בחר קובץ תוסף…", command=self.pick_file).pack(
-            side="right", padx=6, pady=6)
+            side="right", padx=(6, 8), pady=6)
         ttk.Button(top, text="או תיקיית מקור…", command=self.pick).pack(
-            side="right", padx=(0, 6), pady=6)
+            side="right", padx=0, pady=6)
+        ttk.Entry(top, textvariable=self.plugin_dir).pack(
+            side="right", fill="x", expand=True, padx=8, pady=6)
 
         cfgf = ttk.LabelFrame(self, text=" תרגום ")
         cfgf.pack(fill="x", **pad)
@@ -175,14 +178,17 @@ class App(tk.Tk):
         ttk.Checkbutton(r, text="אמת מול Google Translate",
                         variable=self.do_verify).pack(side="right", padx=14)
 
-        r3 = ttk.Frame(cfgf); r3.pack(fill="x", padx=6, pady=(0, 4))
+        #  שורת ההיקף נשמרת קצרה, וההסבר יורד לשורה נפרדת: עם
+        #  תוויות ארוכות השורה נחתכה בקצה השמאלי של החלון
+        r3 = ttk.Frame(cfgf); r3.pack(fill="x", padx=6, pady=(0, 0))
         ttk.Label(r3, text="מה לתרגם:").pack(side="right")
-        ttk.Radiobutton(r3, text="ממשק בלבד (כפתורים, תוויות, הודעות)",
-                        value=core.SCOPE_UI, variable=self.scope).pack(side="right", padx=6)
-        ttk.Radiobutton(r3, text="ממשק + תוכן (גם הביוגרפיות והטקסטים)",
-                        value=core.SCOPE_CONTENT, variable=self.scope).pack(side="right", padx=6)
-        ttk.Label(r3, text="— תוכן = הרבה יותר מחרוזות, זמן ועלות",
-                  foreground="#666").pack(side="right", padx=6)
+        ttk.Radiobutton(r3, text="ממשק בלבד", value=core.SCOPE_UI,
+                        variable=self.scope).pack(side="right", padx=6)
+        ttk.Radiobutton(r3, text="ממשק + תוכן", value=core.SCOPE_CONTENT,
+                        variable=self.scope).pack(side="right", padx=6)
+        ttk.Label(cfgf, text="ממשק = כפתורים, תוויות והודעות · "
+                             "תוכן = גם הביוגרפיות והטקסטים, פי עשרות מחרוזות",
+                  foreground="#666").pack(anchor="e", padx=12, pady=(0, 4))
 
         r2 = ttk.Frame(cfgf); r2.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(r2, text="מודל:").pack(side="right")
@@ -202,12 +208,15 @@ class App(tk.Tk):
         self.status = ttk.Label(btns, text="", foreground="#666")
         self.status.pack(side="right", padx=10)
 
-        cols = ("he", "en", "back", "score", "fwd")
+        #  סדר העמודות הפוך: Tk מסדר עמודות משמאל לימין, ולכן כדי
+        #  ש"מקור" יהיה העמודה הימנית — הראשונה בקריאה עברית —
+        #  היא צריכה להיות האחרונה ברשימה
+        cols = ("fwd", "score", "back", "en", "he")
         heads = {"he": "מקור", "en": "תרגום", "back": "תרגום חוזר",
                  "score": "חוזר", "fwd": "ישיר"}
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=16)
         for c in cols:
-            self.tree.heading(c, text=heads[c])
+            self.tree.heading(c, text=heads[c], anchor="e")
             self.tree.column(c, width=260, anchor="e")
         self.tree.column("score", width=60, anchor="center")
         self.tree.column("fwd", width=60, anchor="center")
@@ -221,13 +230,16 @@ class App(tk.Tk):
 
         logf = ttk.Frame(self); logf.pack(fill="x", padx=8, pady=(4, 8))
         bar = ttk.Frame(logf); bar.pack(fill="x")
-        ttk.Button(bar, text="העתק לוג", command=self.copy_log).pack(side="left", padx=2)
-        ttk.Button(bar, text="נקה", command=self.clear_log).pack(side="left", padx=2)
+        ttk.Button(bar, text="העתק לוג", command=self.copy_log).pack(side="right", padx=2)
+        ttk.Button(bar, text="נקה", command=self.clear_log).pack(side="right", padx=2)
         self.log = tk.Text(logf, height=7, wrap="word")
+        #  Text אינו יודע RTL מעצמו; יישור לימין דרך tag הוא הדרך
+        #  היחידה, והפס נשאר בצד שמאל כמו בטקסט עברי
+        self.log.tag_configure("rtl", justify="right")
         sb = ttk.Scrollbar(logf, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.log.pack(fill="x", expand=True)
+        sb.pack(side="left", fill="y")
+        self.log.pack(side="right", fill="x", expand=True)
 
     # ─────────────── עזר ───────────────
     def say(self, msg):
@@ -235,7 +247,7 @@ class App(tk.Tk):
         # זורקת TclError ומזהמת את הפלט
         if self.closing: return
         try:
-            self.log.insert("end", msg + "\n"); self.log.see("end")
+            self.log.insert("end", msg + "\n", "rtl"); self.log.see("end")
             self.update_idletasks()
         except (tk.TclError, RuntimeError):
             # RuntimeError: הודעה מעובד רקע אחרי שלולאת האירועים נעצרה

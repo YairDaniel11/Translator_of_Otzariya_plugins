@@ -270,6 +270,19 @@ def _retry_after(e, body=""):
     return None
 
 
+#  שגיאות שמשמעותן "המודל הזה חסום עבורך" — מכסה, אינו קיים, אינו
+#  נתמך, או עמוס גם אחרי הניסיונות החוזרים. במקרים האלה מעבר למודל
+#  אחר הוא הפעולה הנכונה; שגיאת מפתח או רשת תחזור בכל מודל.
+_BLOCKED = re.compile(
+    r"(HTTP (?:429|404|400|503|529)|quota|rate limit|"
+    r"not found|no longer available|not supported|unsupported|"
+    r"overloaded|high demand)", re.I)
+
+
+def _model_blocked(e):
+    return bool(_BLOCKED.search(str(e)))
+
+
 def explain_error(msg):
     """הסבר בעברית ומה לעשות. הודעת הספק באנגלית ולא מכוונת למשתמש."""
     s = str(msg)
@@ -400,46 +413,70 @@ def translate(strings, provider, api_key, target="English", examples=None, chunk
         return {}
 
     fn = translate_claude if provider == "claude" else translate_gemini
+    say = progress or (lambda _m: None)
 
-    # מועמדים: המודל שנבחר ידנית, או הרשימה הזמינה לפי סדר עדיפות.
-    # הרשימה עשויה לכלול מודלים שהשרת דוחה בפועל ("no longer available"),
-    # ולכן מנסים כמה עד שאחד באמת עונה.
-    if model:
-        candidates = [model]
-    else:
-        try:
-            candidates = list_models(provider, api_key)[:5]
-        except Exception as e:
-            raise RuntimeError(f"לא ניתן לאתר מודל זמין — {e}")
-        if not candidates:
+    #  מצב המודל הפעיל. המעבר למודל הבא חייב לחול על *כל* הבקשות
+    #  ולא רק על הראשונה: מכסה נגמרת באמצע הריצה, ובלי מעבר חי כל
+    #  שאר האצוות נופלות על אותה שגיאה והממשק נשאר חצי בעברית.
+    st = {"model": model, "pool": None, "tried": set()}
+
+    def pool():
+        """רשימת המודלים הזמינים — נשלפת רק כשצריך אותה בפועל,
+        כדי לא לבזבז בקשה כשהמודל שנבחר עובד."""
+        if st["pool"] is None:
+            try:
+                st["pool"] = list_models(provider, api_key)
+            except Exception as e:
+                say(f"    לא ניתן לשלוף רשימת מודלים: {e}")
+                st["pool"] = []
+        return st["pool"]
+
+    def next_model():
+        for m in pool():
+            if m not in st["tried"]:
+                return m
+        return None
+
+    if not st["model"]:
+        st["model"] = next_model()
+        if not st["model"]:
             raise RuntimeError("לא נמצאו מודלים זמינים למפתח הזה")
 
-    chosen, first, last_err = None, items[:chunk], None
-    for cand in candidates:
-        try:
-            first_out = fn(first, api_key, target, model=cand, examples=examples)
-            chosen = cand
-            break
-        except Exception as e:
-            last_err = e
-            if progress: progress(f"  {cand} לא זמין — מנסה את הבא")
-    if not chosen:
-        raise RuntimeError(f"התרגום נכשל בכל המודלים שנוסו. אחרון: {last_err}")
+    def call(part):
+        """בקשה אחת, עם מעבר אוטומטי למודל הבא כשהמודל הנוכחי חסום."""
+        last = None
+        while st["model"]:
+            st["tried"].add(st["model"])
+            try:
+                return fn(part, api_key, target, model=st["model"],
+                          examples=examples)
+            except Exception as e:
+                last = e
+                if not _model_blocked(e):
+                    raise
+                nxt = next_model()
+                if not nxt:
+                    raise RuntimeError(
+                        f"כל המודלים הזמינים חסומים או נכשלו. אחרון: {e}")
+                say(f"    {st['model']} חסום ({str(e)[:90]})")
+                say(f"    עובר אוטומטית ל-{nxt}")
+                st["model"] = nxt
+        raise last or RuntimeError("אין מודל זמין")
 
-    if progress:
-        progress(f"  מודל: {chosen}")
-        progress(f"  תורגמו {len(first)}/{len(items)}")
+    first = items[:chunk]
+    first_out = call(first)
+    say(f"  מודל: {st['model']}")
+    say(f"  תורגמו {len(first)}/{len(items)}")
     out = {k: v for k, v in first_out.items() if v}
 
     for i in range(chunk, len(items), chunk):
         part = items[i:i + chunk]
         try:
-            got = fn(part, api_key, target, model=chosen, examples=examples)
+            got = call(part)
             out.update({k: v for k, v in got.items() if v})
         except Exception as e:
-            if progress: progress(f"  שגיאה באצווה {i//chunk+1}: {e}")
-        if progress:
-            progress(f"  תורגמו {min(i+chunk, len(items))}/{len(items)}")
+            say(f"  שגיאה באצווה {i//chunk+1}: {e}")
+        say(f"  תורגמו {min(i+chunk, len(items))}/{len(items)}")
 
     #  סבבי השלמה. אצווה שנפלה — או תשובה חלקית של המודל — השאירה
     #  עד כאן מחרוזות בלי תרגום, ובלי הסבב הזה הן פשוט נשארות
@@ -449,26 +486,24 @@ def translate(strings, provider, api_key, target="English", examples=None, chunk
         missing = [s for s in items if not out.get(s)]
         if not missing:
             break
-        if progress:
-            progress(f"  סבב השלמה {rnd}: {len(missing)} מחרוזות ללא תרגום")
+        say(f"  סבב השלמה {rnd}: {len(missing)} מחרוזות ללא תרגום")
         for i in range(0, len(missing), size):
             part = missing[i:i + size]
             try:
-                got = fn(part, api_key, target, model=chosen, examples=examples)
+                got = call(part)
                 out.update({k: v for k, v in got.items() if v})
             except Exception as e:
-                if progress: progress(f"    לא הושלם: {e}")
+                say(f"    לא הושלם: {e}")
 
     still = [s for s in items if not out.get(s)]
-    if progress:
-        if still:
-            progress(f"  ⚠ {len(still)} מחרוזות נשארו בלי תרגום ויופיעו בעברית:")
-            for s in still[:10]:
-                progress(f"      {s}")
-            if len(still) > 10:
-                progress(f"      … ועוד {len(still) - 10}")
-        else:
-            progress(f"  כל {len(items)} המחרוזות תורגמו")
+    if still:
+        say(f"  ⚠ {len(still)} מחרוזות נשארו בלי תרגום ויופיעו בעברית:")
+        for s in still[:10]:
+            say(f"      {s}")
+        if len(still) > 10:
+            say(f"      … ועוד {len(still) - 10}")
+    else:
+        say(f"  כל {len(items)} המחרוזות תורגמו")
     return out
 
 
