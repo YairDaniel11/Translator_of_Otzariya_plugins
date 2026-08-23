@@ -392,9 +392,11 @@ class App(tk.Tk):
                         progress=self.say, model=self.model.get().strip() or None)
                 except Exception as e:
                     self.say(f"התרגום נכשל: {e}")
+                    hint = core.explain_error(e)
                     messagebox.showerror(
                         "התרגום נכשל",
-                        f"{e}\n\nנסה 'רענן רשימת מודלים' ובחר מודל מהרשימה.")
+                        (hint + "\n\n— — —\nההודעה מהספק:\n" + str(e)[:500])
+                        if hint else str(e))
                     return
                 self.say(f"התקבלו {len(self.pairs)} תרגומים.")
                 if not self.pairs:

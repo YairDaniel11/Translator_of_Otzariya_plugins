@@ -225,15 +225,18 @@ def _post_json(url, payload, headers, timeout=120, retries=4, progress=None):
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             # גוף התשובה מכיל את הסיבה האמיתית — בלעדיו רואים רק "404"
+            body = ""
             try:
                 body = e.read().decode("utf-8", "replace")
                 msg = json.loads(body).get("error", {}).get("message", body)
             except Exception:
-                msg = ""
+                msg = body
             last = RuntimeError(f"HTTP {e.code}: {msg[:400]}")
             if e.code not in RETRY_CODES or attempt == retries:
                 raise last from None
-            wait = _retry_after(e) or min(2 ** attempt * 3, 45)
+            # הספק מציין בעצמו מתי לחזור — לכבד את זה עדיף מלנחש,
+            # ובחריגת מכסה זה ההבדל בין הצלחה לכשל מיידי נוסף
+            wait = _retry_after(e, body) or min(2 ** attempt * 3, 45)
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last = RuntimeError(f"תקלת רשת: {e}")
             if attempt == retries:
@@ -245,12 +248,48 @@ def _post_json(url, payload, headers, timeout=120, retries=4, progress=None):
     raise last
 
 
-def _retry_after(e):
+def _retry_after(e, body=""):
+    """זמן ההמתנה שהספק ביקש — מהכותרת, ואם אין, מגוף התשובה.
+
+    Gemini אינו שולח retry-after; הוא מחזיר RetryInfo בגוף
+    (`retryDelay: "11s"`) ואת המשפט "Please retry in 10.48954".
+    בלי הקריאה מהגוף המתנו 3 שניות במקום 11, וכל הניסיונות נשרפו.
+    """
     try:
         v = e.headers.get("retry-after")
-        return min(max(int(float(v)), 1), 60) if v else None
+        if v:
+            return min(max(int(float(v)), 1), 120)
     except Exception:
-        return None
+        pass
+    for pat in (r'"retryDelay"\s*:\s*"?([\d.]+)s',
+                r"retry in ([\d.]+)"):
+        m = re.search(pat, body or "")
+        if m:
+            # תוספת קטנה: המתנה מדויקת-מדי נדחית שוב לעתים
+            return min(max(int(float(m.group(1))) + 2, 2), 120)
+    return None
+
+
+def explain_error(msg):
+    """הסבר בעברית ומה לעשות. הודעת הספק באנגלית ולא מכוונת למשתמש."""
+    s = str(msg)
+    if "429" in s or "quota" in s.lower() or "rate" in s.lower():
+        return ("חרגת ממכסת הבקשות של הספק (לרוב מכסת ה-Free Tier).\n\n"
+                "מה אפשר לעשות:\n"
+                "• להמתין ולנסות שוב — המכסה מתאפסת לפי חלון הזמן של הספק.\n"
+                "• לבחור מודל אחר ב'רענן רשימת מודלים' — המכסה נמדדת לכל מודל בנפרד.\n"
+                "• לעבור למנוע השני (Claude/Gemini) עם מפתח שלו.\n"
+                "• לצמצם היקף: 'ממשק בלבד' שולח פחות בקשות מ'ממשק + תוכן'.")
+    if "503" in s or "high demand" in s.lower() or "overload" in s.lower():
+        return ("השרת של הספק עמוס כרגע. התוכנה כבר ניסתה שוב מספר פעמים.\n\n"
+                "נסה שוב בעוד כמה דקות, או בחר מודל אחר.")
+    if "404" in s:
+        return ("המודל שנבחר אינו זמין למפתח הזה.\n\n"
+                "לחץ 'רענן רשימת מודלים' ובחר מהרשימה.")
+    if "401" in s or "403" in s or "API key" in s:
+        return ("המפתח נדחה. ודא שהוא תקין ושייך למנוע שנבחר "
+                "(מפתח של Google לא יעבוד עם Claude ולהיפך).")
+    return ""
 
 
 def _get_json(url, headers=None, timeout=60):
