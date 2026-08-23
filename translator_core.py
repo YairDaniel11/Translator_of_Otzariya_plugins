@@ -55,11 +55,33 @@ _CODE_HINTS = re.compile(
 #  שברי תגיות וביטויים רגולריים. הם נוצרים כשמחרוזת בקוד מכילה
 #  מירכאות פנימיות, והסריקה קוטעת אותה באמצע — התוצאה נשלחת
 #  לתרגום ומייצרת מפתחות שלא יתאימו לשום טקסט בדף.
-_MARKUP = re.compile(
-    r"(<[a-zA-Z/!]|/?>|=\s*[\"']|\(\?:|\\\\|&[a-z]+;|\$\{|"
+#  קוד לכל דבר: ביטוי רגולרי, שרשור מחרוזות, פריט במילון. אין בו
+#  כיתוב שאפשר לחלץ, ולכן הוא נזרק כולו.
+_CODEY = re.compile(
+    r"(\(\?:|\\\\|\$\{|"
     r"[\"']\s*\+|\+\s*[\"']|"      # שרשור מחרוזות בקוד
     r"[\"']\s*:\s*[\"']|"          # פריט במילון קוד
     r"\|)")                        # חלופה בביטוי רגולרי
+
+#  שברי תגיות. כאן דווקא *יש* כיתוב, והוא נפוץ: הקוד מרכיב
+#  'הדיווח מתייחס לערך: <b>' + name, וצומת הטקסט שבדף הוא החלק
+#  שלפני התגית. לכן מקלפים את התגיות ובודקים כל מקטע בנפרד.
+_TAGS = re.compile(r"(<[a-zA-Z/!][^<>]*>?|</?[a-zA-Z]*>|/?>|=\s*[\"']|&[a-z]+;)")
+
+_MARKUP = re.compile("|".join((_CODEY.pattern, _TAGS.pattern)))
+
+
+def _split_markup(s):
+    """מפרק שבר שמכיל תגיות למקטעי הטקסט שביניהן."""
+    if _CODEY.search(s):
+        return []
+    out = []
+    for p in _TAGS.split(s):
+        if not p or _TAGS.match(p):
+            continue
+        # המירכאה שסגרה את האטריביוט נשארת דבוקה למקטע
+        out.append(p.strip(" \t\"'"))
+    return out
 
 
 def _unescape_js(s):
@@ -147,12 +169,21 @@ def extract_strings(plugin_dir, scope=SCOPE_UI):
             for q in ("'", '"', "`"):
                 cand += re.findall(q + r"([^" + q + r"\n]{0," + L + r"})" + q, body)
 
-            for c in cand:
-                c = _clean(c, maxlen)
-                if c:
-                    found.setdefault(c, [])
-                    if rel not in found[c]:
-                        found[c].append(rel)
+            def keep(s):
+                found.setdefault(s, [])
+                if rel not in found[s]:
+                    found[s].append(rel)
+
+            for raw_c in cand:
+                got = _clean(raw_c, maxlen)
+                if got:
+                    keep(got)
+                    continue
+                # נדחה בגלל תגיות — ננסה את מקטעי הטקסט שביניהן
+                for seg in _split_markup(raw_c):
+                    got = _clean(seg, maxlen)
+                    if got:
+                        keep(got)
     return found
 
 
