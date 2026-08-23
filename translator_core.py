@@ -497,7 +497,7 @@ def translate(strings, provider, api_key, target="English", examples=None, chunk
 
     still = [s for s in items if not out.get(s)]
     if still:
-        say(f"  ⚠ {len(still)} מחרוזות נשארו בלי תרגום ויופיעו בעברית:")
+        say(f"  ⚠ {len(still)} מחרוזות נשארו בלי תרגום ויופיעו בעברית")
         for s in still[:10]:
             say(f"      {s}")
         if len(still) > 10:

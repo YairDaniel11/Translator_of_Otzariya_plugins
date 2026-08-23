@@ -18,6 +18,18 @@ LANGS = {"אנגלית": ("en", "English"), "צרפתית": ("fr", "French"),
          "ספרדית": ("es", "Spanish"), "רוסית": ("ru", "Russian")}
 
 
+def L(text):
+    """תווית עברית עם נקודתיים.
+
+    tkinter על Windows אינו מיישם את אלגוריתם ה-BiDi של יוניקוד:
+    סימן ניטרלי בקצה מחרוזת עברית — נקודתיים, שלוש נקודות, סוגריים
+    — נדחף לצד הלא נכון, ו"מנוע:" מוצג כ-":מנוע". אין הגדרה שמתקנת
+    זאת, ולכן הנקודתיים נכתבות בתחילת המחרוזת הלוגית וכך נראות
+    בסופה הוויזואלי. באותו נימוק הוסרו "…" וסוגריים משאר התוויות.
+    """
+    return ":" + text
+
+
 def load_cfg():
     try:    return json.load(io.open(CFG, encoding="utf-8"))
     except Exception: return {}
@@ -45,18 +57,18 @@ class BuildDialog(tk.Toplevel):
 
         head = f"התרגום הושלם — {n_pairs} מחרוזות"
         if suspect:
-            head += f", {suspect} חשודות (מסומנות באדום)"
+            head += f", {suspect} חשודות ומסומנות באדום"
         ttk.Label(self, text=head, font=("", 10, "bold")).pack(
             anchor="e", padx=14, pady=(12, 2))
-        ttk.Label(self, text="לאיזו גרסת אוצריא לבנות?",
+        ttk.Label(self, text="?לאיזו גרסת אוצריא לבנות",
                   foreground="#555").pack(anchor="e", padx=14, pady=(0, 8))
 
         opts = [
             ("force", f"נעול ל{lang.upper()} · עובד מגרסה {core.MIN_VER_FORCE}",
-             "הממשק תמיד בשפת היעד, ללא תלות באוצריא. מומלץ לבדיקה."),
+             "הממשק תמיד בשפת היעד, ללא תלות באוצריא · מומלץ לבדיקה"),
             ("auto", f"לפי שפת אוצריא · דורש {core.MIN_VER_AUTO} ומעלה",
-             "הממשק נקבע לפי שפת אוצריא. שדה השפה קיים רק מגרסה זו."),
-            ("both", "שתי החבילות", "נוצרות שתיהן, זו לצד זו."),
+             "הממשק נקבע לפי שפת אוצריא · שדה השפה קיים רק מגרסה זו"),
+            ("both", "שתי החבילות", "נוצרות שתיהן, זו לצד זו"),
         ]
         for val, title, why in opts:
             f = ttk.Frame(self); f.pack(fill="x", padx=14, pady=2)
@@ -65,11 +77,13 @@ class BuildDialog(tk.Toplevel):
             ttk.Label(f, text=why, foreground="#777").pack(anchor="e", padx=(0, 22))
 
         self.nf = ttk.Frame(self); self.nf.pack(fill="x", padx=14, pady=(10, 2))
-        ttk.Label(self.nf, text=f"שם החבילה הנעולה (עד {core.MAX_NAME} תווים):").pack(anchor="e")
+        ttk.Label(self.nf,
+                  text=f"שם החבילה הנעולה — עד {core.MAX_NAME} תווים"
+                  ).pack(anchor="e")
         self.name_var = tk.StringVar(value=core.suggest_name(he_name, lang, pairs))
         ttk.Entry(self.nf, textvariable=self.name_var, width=24,
                   justify="right").pack(anchor="e", pady=2)
-        ttk.Label(self.nf, text="אוצריא אינה תומכת בשם תלוי-שפה, ולכן הוא קבוע.",
+        ttk.Label(self.nf, text="אוצריא אינה תומכת בשם תלוי-שפה, ולכן הוא קבוע",
                   foreground="#777").pack(anchor="e")
 
         bar = ttk.Frame(self); bar.pack(fill="x", padx=14, pady=12)
@@ -156,9 +170,9 @@ class App(tk.Tk):
         #  יושבים בקצה הימני, ושדה הנתיב נמשך משם שמאלה
         top = ttk.LabelFrame(self, text=" תוסף ")
         top.pack(fill="x", **pad)
-        ttk.Button(top, text="בחר קובץ תוסף…", command=self.pick_file).pack(
+        ttk.Button(top, text="בחר קובץ תוסף", command=self.pick_file).pack(
             side="right", padx=(6, 8), pady=6)
-        ttk.Button(top, text="או תיקיית מקור…", command=self.pick).pack(
+        ttk.Button(top, text="או תיקיית מקור", command=self.pick).pack(
             side="right", padx=0, pady=6)
         ttk.Entry(top, textvariable=self.plugin_dir).pack(
             side="right", fill="x", expand=True, padx=8, pady=6)
@@ -166,37 +180,38 @@ class App(tk.Tk):
         cfgf = ttk.LabelFrame(self, text=" תרגום ")
         cfgf.pack(fill="x", **pad)
         r = ttk.Frame(cfgf); r.pack(fill="x", padx=6, pady=6)
-        ttk.Label(r, text="מנוע:").pack(side="right")
+        ttk.Label(r, text=L("מנוע")).pack(side="right")
         ttk.Combobox(r, textvariable=self.provider, values=["claude", "gemini"],
                      width=10, state="readonly").pack(side="right", padx=6)
-        ttk.Label(r, text="שפה:").pack(side="right", padx=(14, 0))
+        ttk.Label(r, text=L("שפה")).pack(side="right", padx=(14, 0))
         ttk.Combobox(r, textvariable=self.lang_name, values=list(LANGS),
                      width=10, state="readonly").pack(side="right", padx=6)
-        ttk.Label(r, text="מפתח API:").pack(side="right", padx=(14, 0))
-        ttk.Entry(r, textvariable=self.api_key, show="•", width=42).pack(
-            side="right", padx=6)
+        ttk.Label(r, text=L("מפתח API")).pack(side="right", padx=(14, 0))
+        ttk.Entry(r, textvariable=self.api_key, show="•", width=42,
+                  justify="left").pack(side="right", padx=6)
         ttk.Checkbutton(r, text="אמת מול Google Translate",
                         variable=self.do_verify).pack(side="right", padx=14)
 
         #  שורת ההיקף נשמרת קצרה, וההסבר יורד לשורה נפרדת: עם
         #  תוויות ארוכות השורה נחתכה בקצה השמאלי של החלון
         r3 = ttk.Frame(cfgf); r3.pack(fill="x", padx=6, pady=(0, 0))
-        ttk.Label(r3, text="מה לתרגם:").pack(side="right")
+        ttk.Label(r3, text=L("מה לתרגם")).pack(side="right")
         ttk.Radiobutton(r3, text="ממשק בלבד", value=core.SCOPE_UI,
                         variable=self.scope).pack(side="right", padx=6)
-        ttk.Radiobutton(r3, text="ממשק + תוכן", value=core.SCOPE_CONTENT,
+        ttk.Radiobutton(r3, text="ממשק ותוכן", value=core.SCOPE_CONTENT,
                         variable=self.scope).pack(side="right", padx=6)
-        ttk.Label(cfgf, text="ממשק = כפתורים, תוויות והודעות · "
-                             "תוכן = גם הביוגרפיות והטקסטים, פי עשרות מחרוזות",
+        ttk.Label(cfgf, text="ממשק — כפתורים, תוויות והודעות · "
+                             "תוכן — גם הביוגרפיות והטקסטים, פי עשרות מחרוזות",
                   foreground="#666").pack(anchor="e", padx=12, pady=(0, 4))
 
         r2 = ttk.Frame(cfgf); r2.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Label(r2, text="מודל:").pack(side="right")
-        self.cb_model = ttk.Combobox(r2, textvariable=self.model, width=34)
+        ttk.Label(r2, text=L("מודל")).pack(side="right")
+        self.cb_model = ttk.Combobox(r2, textvariable=self.model, width=34,
+                                     justify="left")
         self.cb_model.pack(side="right", padx=6)
         ttk.Button(r2, text="רענן רשימת מודלים",
                    command=self.load_models).pack(side="right", padx=6)
-        ttk.Label(r2, text="(ריק = בחירה אוטומטית)",
+        ttk.Label(r2, text="ריק — בחירה אוטומטית",
                   foreground="#666").pack(side="right", padx=6)
 
         #  כפתור אחד לכל התהליך. השלבים (חילוץ, תרגום, אימות) הם
@@ -211,7 +226,7 @@ class App(tk.Tk):
         #  סדר העמודות הפוך: Tk מסדר עמודות משמאל לימין, ולכן כדי
         #  ש"מקור" יהיה העמודה הימנית — הראשונה בקריאה עברית —
         #  היא צריכה להיות האחרונה ברשימה
-        cols = ("fwd", "score", "back", "en", "he")
+        cols = self.cols = ("fwd", "score", "back", "en", "he")
         heads = {"he": "מקור", "en": "תרגום", "back": "תרגום חוזר",
                  "score": "חוזר", "fwd": "ישיר"}
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=16)
@@ -224,8 +239,8 @@ class App(tk.Tk):
         self.tree.pack(fill="both", expand=True, padx=8, pady=4)
         self.tree.bind("<Double-1>", self.edit_cell)
 
-        ttk.Label(self, text="לחיצה כפולה על שורה — עריכת התרגום. שורות אדומות: "
-                             "שתי בדיקות האימות נכשלו — כדאי לבדוק ידנית.",
+        ttk.Label(self, text="לחיצה כפולה על שורה פותחת עריכה · "
+                             "שורה אדומה — שתי בדיקות האימות נכשלו, כדאי לבדוק",
                   foreground="#666").pack(anchor="e", padx=10)
 
         logf = ttk.Frame(self); logf.pack(fill="x", padx=8, pady=(4, 8))
@@ -275,7 +290,7 @@ class App(tk.Tk):
         if not key:
             messagebox.showwarning("", "הזן מפתח API תחילה."); return
         def job():
-            self.say(f"שולף מודלים זמינים מ-{self.provider.get()}…")
+            self.say(f"שולף מודלים זמינים מ-{self.provider.get()}")
             try:
                 models = core.list_models(self.provider.get(), key)
             except Exception as e:
@@ -343,10 +358,14 @@ class App(tk.Tk):
     def _fill_table(self, rows):
         self.tree.delete(*self.tree.get_children())
         for r in rows:
+            #  הערכים נבנים לפי self.cols ולא בסדר קבוע: סדר העמודות
+            #  הפוך לצורך RTL, וטופל קבוע היה משבץ את המקור העברי
+            #  בעמודת הציונים
+            cell = {"he": r["he"], "en": r["en"], "back": r.get("back", ""),
+                    "score": "" if r.get("score") is None else r["score"],
+                    "fwd": "" if r.get("score_fwd") is None else r["score_fwd"]}
             self.tree.insert("", "end",
-                             values=(r["he"], r["en"], r.get("back", ""),
-                                     "" if r.get("score") is None else r["score"],
-                                     "" if r.get("score_fwd") is None else r["score_fwd"]),
+                             values=tuple(cell[c] for c in self.cols),
                              tags=("suspect",) if r.get("suspect") else ())
 
     # ─────────────── התהליך ───────────────
@@ -371,13 +390,13 @@ class App(tk.Tk):
             messagebox.showwarning("", "הזן מפתח API."); return
         self.persist()
         code, target = self.lang()
-        self.busy(True, "עובד…")
+        self.busy(True, "עובד")
 
         def job():
             try:
                 scope = self.scope.get()
-                self.say("מחלץ מחרוזות ממשק…" if scope == core.SCOPE_UI
-                         else "מחלץ מחרוזות ממשק ותוכן…")
+                self.say("מחלץ מחרוזות ממשק" if scope == core.SCOPE_UI
+                         else "מחלץ מחרוזות ממשק ותוכן")
                 self.strings = core.extract_strings(d, scope)
                 self.say(f"נמצאו {len(self.strings)} מחרוזות.")
                 if not self.strings:
@@ -392,12 +411,12 @@ class App(tk.Tk):
                             "היקף גדול",
                             f"נמצאו {len(self.strings):,} מחרוזות.\n\n"
                             f"תרגום בהיקף כזה עשוי לקחת זמן רב ולצרוך "
-                            f"מכסת API משמעותית.\n\nלהמשיך?"):
+                            f"מכסת API משמעותית.\n\n?להמשיך"):
                         self.say("בוטל לפי בקשת המשתמש.")
                         return
                 self.refresh_table([{"he": s, "en": ""} for s in sorted(self.strings)])
 
-                self.say(f"מתרגם ל{self.lang_name.get()} באמצעות {self.provider.get()}…")
+                self.say(f"מתרגם ל{self.lang_name.get()} באמצעות {self.provider.get()}")
                 try:
                     self.pairs = core.translate(
                         sorted(self.strings), self.provider.get(), key, target,
@@ -419,7 +438,7 @@ class App(tk.Tk):
                 self.refresh_table(rows)
                 suspect = 0
                 if self.do_verify.get():
-                    self.say("מאמת מול Google Translate…")
+                    self.say("מאמת מול Google Translate")
                     rows = core.verify(self.pairs, progress=self.say)
                     self.refresh_table(rows)
                     suspect = sum(1 for r in rows if r.get("suspect"))
@@ -459,13 +478,13 @@ class App(tk.Tk):
         code, _ = self.lang()
         base = self.out_root or os.path.dirname(d.rstrip("\\/"))
         out = os.path.join(base, "פלט-תרגום")
-        self.busy(True, "בונה…")
+        self.busy(True, "בונה")
 
         def job():
             try:
                 made = []
                 for mode in modes:
-                    self.say(f"בונה חבילה ({mode})…")
+                    self.say(f"בונה חבילה — {mode}")
                     try:
                         dest, size = core.build_package(
                             d, out, self.pairs, code, RUNTIME,
@@ -488,12 +507,14 @@ class App(tk.Tk):
         sel = self.tree.selection()
         if not sel: return
         item = sel[0]
-        he, en = self.tree.item(item, "values")[0], self.tree.item(item, "values")[1]
+        vals = list(self.tree.item(item, "values"))
+        i_he, i_en = self.cols.index("he"), self.cols.index("en")
+        he, en = vals[i_he], vals[i_en]
         new = tk.simpledialog.askstring("עריכת תרגום", he, initialvalue=en, parent=self)
         if new is None: return
         self.pairs[he] = new
-        v = list(self.tree.item(item, "values")); v[1] = new
-        self.tree.item(item, values=v, tags=())
+        vals[i_en] = new
+        self.tree.item(item, values=vals, tags=())
 
 
 def _flush_std():
