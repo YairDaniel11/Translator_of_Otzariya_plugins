@@ -35,7 +35,12 @@ class App(tk.Tk):
         self.geometry("980x680")
         cfg = load_cfg()
 
-        self.plugin_dir = tk.StringVar(value=cfg.get("plugin_dir", ""))
+        # נתיב שנשמר מריצה קודמת עשוי להיות תיקיית פריסה זמנית שנמחקה
+        prev = cfg.get("plugin_dir", "")
+        if prev and not os.path.exists(os.path.join(prev, "manifest.json")):
+            prev = ""
+        self.plugin_dir = tk.StringVar(value=prev)
+        self.out_root   = os.path.dirname(prev.rstrip("\\/")) if prev else ""
         self.provider   = tk.StringVar(value=cfg.get("provider", "claude"))
         self.api_key    = tk.StringVar(value=cfg.get("api_key", ""))
         self.lang_name  = tk.StringVar(value=cfg.get("lang", "אנגלית"))
@@ -55,8 +60,10 @@ class App(tk.Tk):
         top.pack(fill="x", **pad)
         ttk.Entry(top, textvariable=self.plugin_dir).pack(
             side="right", fill="x", expand=True, padx=6, pady=6)
-        ttk.Button(top, text="בחר תיקייה…", command=self.pick).pack(
+        ttk.Button(top, text="בחר קובץ תוסף…", command=self.pick_file).pack(
             side="right", padx=6, pady=6)
+        ttk.Button(top, text="או תיקיית מקור…", command=self.pick).pack(
+            side="right", padx=(0, 6), pady=6)
 
         cfgf = ttk.LabelFrame(self, text=" תרגום ")
         cfgf.pack(fill="x", **pad)
@@ -159,12 +166,39 @@ class App(tk.Tk):
             self.say(f"נמצאו {len(models)} מודלים. נבחר: {self.model.get()}")
         self.run_bg(job)
 
+    def pick_file(self):
+        """בחירת קובץ .otzplugin — הצורה שבה תוסף מופץ בפועל."""
+        p = filedialog.askopenfilename(
+            title="בחר קובץ תוסף",
+            filetypes=[("תוסף אוצריא", "*.otzplugin"), ("ZIP", "*.zip"),
+                       ("כל הקבצים", "*.*")])
+        if not p: return
+        try:
+            d = core.unpack_plugin(p)
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"לא ניתן לפרוס את החבילה:\n{e}"); return
+        # הפלט נשמר ליד הקובץ שהמשתמש בחר, לא ליד תיקיית הפריסה הזמנית
+        self.out_root = os.path.dirname(os.path.abspath(p))
+        self.say(f"נפרס: {os.path.basename(p)}")
+        self._accept(d)
+
     def pick(self):
         d = filedialog.askdirectory(title="בחר תיקיית תוסף (זו שמכילה manifest.json)")
         if not d: return
         if not os.path.exists(os.path.join(d, "manifest.json")):
-            messagebox.showerror("שגיאה", "לא נמצא manifest.json בתיקייה שנבחרה."); return
-        self.plugin_dir.set(d); self.persist()
+            messagebox.showerror(
+                "שגיאה",
+                "לא נמצא manifest.json בתיקייה שנבחרה.\n\n"
+                "אם יש לך קובץ .otzplugin — השתמש בכפתור 'בחר קובץ תוסף…'.")
+            return
+        self.out_root = os.path.dirname(d.rstrip("\\/"))
+        self._accept(d)
+
+    def _accept(self, d):
+        self.plugin_dir.set(d)
+        self.strings, self.pairs = {}, {}     # מקור חדש — נתוני התרגום הקודמים אינם רלוונטיים
+        self.tree.delete(*self.tree.get_children())
+        self.persist()
         m = json.loads(io.open(os.path.join(d, "manifest.json"), encoding="utf-8-sig").read())
         self.say(f"נבחר: {m.get('name')} v{m.get('version')}")
 
@@ -234,7 +268,8 @@ class App(tk.Tk):
         code, _ = self.lang()
         m = json.loads(io.open(os.path.join(d, "manifest.json"), encoding="utf-8-sig").read())
         entry = m.get("entrypoint", "index.html")
-        out = os.path.join(os.path.dirname(d.rstrip("\\/")), "פלט-תרגום")
+        base = self.out_root or os.path.dirname(d.rstrip("\\/"))
+        out = os.path.join(base, "פלט-תרגום")
 
         beta = None
         if mode == "force":

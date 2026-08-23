@@ -508,6 +508,31 @@ def suggest_name(he_name, lang="en", pairs=None):
     return short[-1][:MAX_NAME] if short else t[:MAX_NAME]
 
 
+def unpack_plugin(pkg_path, dest=None):
+    """פורס קובץ .otzplugin ומחזיר את התיקייה שבה יושב manifest.json.
+
+    כך אפשר לבחור את הקובץ שהמשתמש באמת מחזיק ביד, ולא לדרוש ממנו
+    לאתר תיקיית מקור. יש חבילות שעוטפות את התוכן בתיקייה אחת
+    בתוך ה-ZIP, ולכן מחפשים את ה-manifest ולא מניחים שהוא בשורש.
+    """
+    import tempfile
+    if dest is None:
+        dest = tempfile.mkdtemp(prefix="otzaria_src_")
+    with zipfile.ZipFile(pkg_path) as z:
+        names = z.namelist()
+        # הגנה מפני נתיבים שיוצאים מתיקיית היעד (Zip Slip)
+        for n in names:
+            p = os.path.normpath(os.path.join(dest, n))
+            if not p.startswith(os.path.normpath(dest) + os.sep) and p != os.path.normpath(dest):
+                raise RuntimeError(f"החבילה מכילה נתיב לא חוקי: {n}")
+        z.extractall(dest)
+
+    for root, dirs, files in os.walk(dest):
+        if "manifest.json" in files:
+            return root
+    raise RuntimeError("לא נמצא manifest.json בתוך החבילה — ייתכן שאינה תוסף אוצריא")
+
+
 def ensure_permissions(manifest):
     """ההרשאות שמנוע התרגום זקוק להן."""
     perms = manifest.setdefault("permissions", [])
