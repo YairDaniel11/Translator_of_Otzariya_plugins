@@ -144,8 +144,7 @@ class App(tk.Tk):
             self.destroy()
         except Exception:
             pass
-        sys.stdout.flush()
-        sys.stderr.flush()
+        _flush_std()
         os._exit(0)
 
     # ─────────────── פריסה ───────────────
@@ -483,15 +482,59 @@ class App(tk.Tk):
         self.tree.item(item, values=v, tags=())
 
 
-def selftest():
+def _flush_std():
+    """ב-EXE ‎--windowed אין stdout/stderr, והם None.
+
+    flush עליהם זורק, ובמצב windowed חריגה לא מטופלת פותחת חלון
+    traceback מודאלי — שממתין ללחיצה לנצח. זה בדיוק מה שתקע את
+    הבדיקה ב-CI.
+    """
+    for s in (sys.stdout, sys.stderr):
+        try:
+            if s is not None:
+                s.flush()
+        except Exception:
+            pass
+
+
+def selftest(report="selftest.log"):
     """בדיקה ללא מסך, לשימוש ה-CI: ה-EXE הארוז באמת עובד ויוצא.
 
     בודקת את מה שאריזה שוברת בפועל — שהנתונים נארזו בתוך ה-EXE,
     שהליבה נטענת, ושהחבילה שנבנית תקינה ומלאה.
+
+    התוצאה נכתבת לקובץ ולא ל-stdout: ב-EXE ‎--windowed אין קונסולה,
+    והדפסת עברית לשם נפלה על codec cp1252 והשאירה את התהליך תקוע.
     """
+    lines = []
+
+    def out(msg):
+        lines.append(msg)
+        try:
+            print(msg)
+        except Exception:
+            pass
+
+    try:
+        code = _selftest_body(out)
+    except Exception:
+        out("FAIL: חריגה לא צפויה\n" + traceback.format_exc())
+        code = 1
+    try:
+        # context manager: os._exit אינו מריק חוצצים, ובלי סגירה
+        # מפורשת הדוח עלול להישאר ריק
+        with io.open(report, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+            fh.flush()
+    except Exception:
+        pass
+    return code
+
+
+def _selftest_body(out):
     import tempfile, zipfile, shutil
     if not os.path.exists(RUNTIME):
-        print("FAIL: i18n_runtime.js אינו ארוז ב-EXE:", RUNTIME); return 1
+        out("FAIL: i18n_runtime.js אינו ארוז ב-EXE: " + RUNTIME); return 1
 
     src = os.path.join(tempfile.mkdtemp(), "plug")
     os.makedirs(os.path.join(src, "data"))
@@ -500,35 +543,57 @@ def selftest():
          "entrypoint": "index.html"}, ensure_ascii=False))
     io.open(os.path.join(src, "index.html"), "w", encoding="utf-8").write(
         '<html dir="rtl"><body><h1>סעיף</h1>'
-        '<input id="q" placeholder="חיפוש שם או תוכן…"></body></html>')
+        '<input id="q" placeholder="חיפוש שם או תוכן…">'
+        '<script>var h = \'הדיווח מתייחס לערך: <b>\' + n;'
+        'var re = /^(?:רבי|רב)/;</script></body></html>')
     io.open(os.path.join(src, "data", "big-data.js"), "w", encoding="utf-8").write(
         "window.D=[1,2,3];\n")
 
     found = core.extract_strings(src)
-    if "חיפוש שם או תוכן…" not in found:
-        print("FAIL: אטריביוט placeholder לא חולץ"); return 1
+    for need in ("חיפוש שם או תוכן…", "הדיווח מתייחס לערך:"):
+        if need not in found:
+            out("FAIL: לא חולץ: " + need); return 1
+    if any("<" in s or "(?:" in s for s in found):
+        out("FAIL: שבר קוד חולץ בטעות"); return 1
 
     pairs = {"סעיף": "Se'if", "חיפוש שם או תוכן…": "Search…"}
-    out = tempfile.mkdtemp()
-    dest, size = core.build_package(src, out, pairs, "en", RUNTIME,
+    dst = tempfile.mkdtemp()
+    dest, size = core.build_package(src, dst, pairs, "en", RUNTIME,
                                     mode="force", beta_name="Test EN")
     with zipfile.ZipFile(dest) as z:
         names = set(z.namelist())
         dic = z.read("i18n/en.js").decode("utf-8")
     for need in ("data/big-data.js", "index.html", "i18n/en.js", "i18n/i18n.js"):
         if need not in names:
-            print("FAIL: חסר בחבילה:", need); return 1
+            out("FAIL: חסר בחבילה: " + need); return 1
     if '"Se\'if"' not in dic:
-        print("FAIL: המילון אינו מוברח נכון"); return 1
-    shutil.rmtree(out, ignore_errors=True)
-    print("SELFTEST OK — %d מחרוזות, חבילה %d KB, %d קבצים"
-          % (len(found), size // 1024, len(names)))
+        out("FAIL: המילון אינו מוברח נכון"); return 1
+    shutil.rmtree(dst, ignore_errors=True)
+    out("SELFTEST OK — %d מחרוזות, חבילה %d KB, %d קבצים"
+        % (len(found), size // 1024, len(names)))
     return 0
 
 
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
-        sys.exit(selftest())
+        i = sys.argv.index("--selftest")
+        rep = sys.argv[i + 1] if len(sys.argv) > i + 1 else "selftest.log"
+        # כל חריגה חייבת להגיע לדוח ולא לחלון: ב-EXE ‎--windowed
+        # חריגה לא מטופלת פותחת חלון traceback מודאלי, והתהליך ממתין
+        # ללחיצה. ב-CI זה נראה כמו תקיעה בלי שום הסבר.
+        try:
+            rc = selftest(rep)
+        except BaseException:
+            try:
+                with io.open(rep, "a", encoding="utf-8") as fh:
+                    fh.write("FAIL: חריגה\n" + traceback.format_exc() + "\n")
+            except Exception:
+                pass
+            rc = 1
+        # יציאה מיידית: שריד של תהליכון או של tk עלול להשאיר את
+        # התהליך תלוי
+        _flush_std()
+        os._exit(rc)
     import tkinter.simpledialog
     tk.simpledialog = tkinter.simpledialog
     App().mainloop()

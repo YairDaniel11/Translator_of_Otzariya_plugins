@@ -85,12 +85,17 @@ jobs:
       - name: בדיקת ה-EXE ללא מסך
         shell: pwsh
         run: |
-          $p = Start-Process 'dist/OtzariaPluginTranslator.exe' -ArgumentList '--selftest' `
-                 -RedirectStandardOutput 'selftest.log' -PassThru -NoNewWindow
+          # התוצאה נקראת מקובץ: ל-EXE ‎--windowed אין קונסולה, ולכן
+          # הפניית stdout אינה אמינה
+          $log = Join-Path $PWD 'selftest.log'
+          if (Test-Path $log) { Remove-Item $log }
+          $p = Start-Process 'dist/OtzariaPluginTranslator.exe' `
+                 -ArgumentList '--selftest', $log -PassThru
           if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'ה-EXE לא הסתיים — נתקע' }
-          Get-Content 'selftest.log'
+          if (Test-Path $log) { Get-Content $log -Encoding utf8 }
           if ($p.ExitCode -ne 0) { throw "הבדיקה נכשלה, קוד $($p.ExitCode)" }
-          if (-not (Select-String -Path 'selftest.log' -Pattern 'SELFTEST OK' -Quiet)) {
+          if (-not (Test-Path $log)) { throw 'הבדיקה לא כתבה דוח' }
+          if (-not (Select-String -Path $log -Pattern 'SELFTEST OK' -Quiet)) {
             throw 'הבדיקה לא דיווחה הצלחה'
           }
 
