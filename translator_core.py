@@ -21,7 +21,18 @@ HEB = re.compile(r"[֐-׿]")
 SKIP_FILES = re.compile(
     r"(\.min\.|pdf\.worker|-data\.js$|-enrich\.js$|relations\.js$|"
     r"dictionary\.js$|mammoth|jszip|libzim|otzaria_plugin\.js$)")
+#  תיקיות שאין לחלץ מהן מחרוזות — הן מכילות נתונים, לא כיתובי ממשק.
+#  אינן קובעות מה נארז: זו הבחנה נפרדת לגמרי (ראו NO_PACK_DIRS).
 SKIP_DIRS = {"__pycache__", "data", "fonts", "i18n", "seder-hadorot", ".git", ".idea"}
+
+#  מה שלא נכנס לחבילה. רק פסולת פיתוח — כל השאר הוא התוסף עצמו.
+#  בעבר האריזה השתמשה ב-SKIP_DIRS, וכך data/ ו-seder-hadorot/ נשמטו
+#  מהחבילה: התוסף נטען, אבל בלי הנתונים והציג "אין תוכן".
+NO_PACK_DIRS = {"__pycache__", ".git", ".idea", "פלט-תרגום"}
+
+#  חבילה ארוזה בתוך חבילה היא תמיד תקלה — קורה כשבוחרים תיקייה
+#  שבה שמורות גם גרסאות .otzplugin קודמות.
+NO_PACK_FILES = re.compile(r"(\.otzplugin$|\.pyc$)")
 
 MAX_NAME = 14           # אוצריא דוחה שם תוסף ארוך מזה
 MIN_VER_AUTO  = "0.9.97"   # app.language זמין רק מכאן
@@ -73,8 +84,20 @@ def extract_strings(plugin_dir):
             body = re.sub(r"^\s*//.*$", "", body, flags=re.M)
 
             cand = re.findall(r">([^<>]{2,140})<", body)
+
+            #  אטריביוטים גלויים, במפורש. הם היו נשמטים: הסריקה
+            #  הכללית מזווגת מירכאות לפי הסדר, ו-id="q" בעל התו
+            #  הבודד הזיז את הזיווג בשורה — placeholder="חיפוש…"
+            #  נקרא כ-" placeholder=" ולא כערך עצמו.
+            for a in ("placeholder", "title", "aria-label", "alt", "value",
+                      "data-label", "data-title"):
+                cand += re.findall(a + r'\s*=\s*"([^"\n]{1,140})"', body)
+                cand += re.findall(a + r"\s*=\s*'([^'\n]{1,140})'", body)
+
+            #  מירכאות: {0,} ולא {2,} — מחרוזת קצרה או ריקה חייבת
+            #  להיבלע כזוג, אחרת הזיווג נשאר מוסט לכל אורך השורה.
             for q in ("'", '"', "`"):
-                cand += re.findall(q + r"([^" + q + r"\n]{2,140})" + q, body)
+                cand += re.findall(q + r"([^" + q + r"\n]{0,140})" + q, body)
 
             for c in cand:
                 c = _clean(c)
@@ -547,8 +570,10 @@ def _zip_dir(src_dir, dest, overrides=None):
     written = set()
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
         for root, dirs, files in os.walk(src_dir):
-            dirs[:] = [x for x in dirs if x in ("i18n",) or x not in SKIP_DIRS]
+            dirs[:] = [x for x in dirs if x not in NO_PACK_DIRS]
             for f in files:
+                if NO_PACK_FILES.search(f):
+                    continue
                 full = os.path.join(root, f)
                 rel = os.path.relpath(full, src_dir).replace("\\", "/")
                 if rel in overrides:
@@ -608,6 +633,25 @@ def _force_runtime(runtime_path, lang):
     return s.replace("\n  autoInit();\n", forced).encode("utf-8")
 
 
+def _missing_from_package(src_dir, pkg_path):
+    """קבצים שקיימים במקור ואינם בחבילה.
+
+    שומר מפני בדיוק התקלה שקרתה: תיקיית נתונים נשמטה מהאריזה,
+    התוסף נטען כרגיל והציג "אין תוכן" — בלי שום שגיאה שתסגיר זאת.
+    """
+    expected = set()
+    for root, dirs, files in os.walk(src_dir):
+        dirs[:] = [x for x in dirs if x not in NO_PACK_DIRS]
+        for f in files:
+            if NO_PACK_FILES.search(f):
+                continue
+            expected.add(os.path.relpath(os.path.join(root, f), src_dir)
+                         .replace("\\", "/"))
+    with zipfile.ZipFile(pkg_path) as z:
+        got = set(z.namelist())
+    return sorted(expected - got)
+
+
 def build_package(src_dir, out_dir, pairs, lang, runtime_js, mode="auto",
                   beta_name=None, progress=None):
     """בונה חבילה מתוך עותק עבודה — קוד המקור של המשתמש אינו משתנה.
@@ -628,8 +672,17 @@ def build_package(src_dir, out_dir, pairs, lang, runtime_js, mode="auto",
         if progress: progress("  נבנה עותק עבודה (המקור לא משתנה)")
         write_dictionary(work, lang, pairs)
         inject_runtime(work, runtime_js, lang, entry)
-        return package(work, out_dir, mode=mode, lang=lang,
-                       runtime_js=runtime_js, beta_name=beta_name, pairs=pairs)
+        dest, size = package(work, out_dir, mode=mode, lang=lang,
+                             runtime_js=runtime_js, beta_name=beta_name, pairs=pairs)
+        missing = _missing_from_package(src_dir, dest)
+        if missing:
+            raise RuntimeError(
+                "החבילה נבנתה חסרה — הקבצים הבאים לא נארזו:\n  "
+                + "\n  ".join(missing[:15])
+                + ("\n  …" if len(missing) > 15 else ""))
+        if progress:
+            progress(f"  נארזו {len(zipfile.ZipFile(dest).namelist())} קבצים")
+        return dest, size
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 

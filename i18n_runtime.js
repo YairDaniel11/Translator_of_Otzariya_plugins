@@ -54,6 +54,21 @@
     return false;
   }
 
+  /* מספר מוביל שנוצר בזמן ריצה: הקוד מרכיב `n + ' ערכים'`, ולכן
+     המחרוזת שבדף היא "0 ערכים" ואינה מפתח במילון. המספר נשמר
+     כמות שהוא ורק שאר הכיתוב מתורגם. */
+  var NUM_PREFIX = /^([0-9][0-9.,  ]*?)\s+(\S.*)$/;
+
+  function lookup(key) {
+    if (!dict || !key) return null;
+    if (Object.prototype.hasOwnProperty.call(dict, key)) return dict[key];
+    var m = NUM_PREFIX.exec(key);
+    if (m && Object.prototype.hasOwnProperty.call(dict, m[2])) {
+      return m[1] + ' ' + dict[m[2]];
+    }
+    return null;
+  }
+
   /* ── מצב אוטומטי: החלפת צמתי טקסט ── */
   function translateTextNodes(root) {
     if (!dict) return;
@@ -62,14 +77,13 @@
     while ((n = walker.nextNode())) {
       var raw = n.nodeValue;
       if (!raw || !raw.trim()) continue;
-      var key = raw.trim();
-      if (!Object.prototype.hasOwnProperty.call(dict, key)) continue;
+      if (lookup(raw.trim()) === null) continue;
       if (skipNode(n)) continue;
       batch.push(n);
     }
     batch.forEach(function (node) {
       var raw = node.nodeValue;
-      node.nodeValue = raw.match(/^\s*/)[0] + dict[raw.trim()] + raw.match(/\s*$/)[0];
+      node.nodeValue = raw.match(/^\s*/)[0] + lookup(raw.trim()) + raw.match(/\s*$/)[0];
     });
   }
 
@@ -80,16 +94,14 @@
     ATTRS.forEach(function (a) {
       root.querySelectorAll('[' + a + ']').forEach(function (el) {
         if (el.closest('[data-i18n-skip]')) return;
-        var v = el.getAttribute(a);
-        if (v && Object.prototype.hasOwnProperty.call(dict, v.trim())) {
-          el.setAttribute(a, dict[v.trim()]);
-        }
+        var v = el.getAttribute(a), tr = v && lookup(v.trim());
+        if (tr !== null && tr !== undefined && tr !== false) el.setAttribute(a, tr);
       });
     });
     // value של כפתורים ושדות submit (לא של קלט טקסט רגיל)
     root.querySelectorAll('input[type=button],input[type=submit]').forEach(function (el) {
-      var v = el.value;
-      if (v && Object.prototype.hasOwnProperty.call(dict, v.trim())) el.value = dict[v.trim()];
+      var tr = el.value && lookup(el.value.trim());
+      if (tr !== null && tr !== undefined && tr !== false) el.value = tr;
     });
   }
 
@@ -133,13 +145,19 @@
             if (n.nodeType === 1) { applyMarked(n); translateTextNodes(n); translateAttrs(n); }
             else if (n.nodeType === 3 && n.parentElement) translateTextNodes(n.parentElement);
           });
+          // אטריביוט שנקבע בזמן ריצה (placeholder, title) — היה
+          // נשאר בעברית, כי המעקב הקודם ניטר רק צמתים שנוספו
+          if (m.type === 'attributes' && m.target) translateAttrs(m.target.parentElement || m.target);
         });
         connect();
       });
     });
     connect();
     function connect() {
-      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      observer.observe(document.body, {
+        childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ATTRS
+      });
     }
   }
 

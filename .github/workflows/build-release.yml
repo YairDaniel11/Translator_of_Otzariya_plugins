@@ -75,6 +75,22 @@ jobs:
           Write-Output "exe size: $size"
           if ($size -lt 3MB) { throw "ה-EXE קטן מהצפוי ($size בתים) — הבנייה כנראה חלקית" }
 
+      # ה-EXE עצמאי (onefile) ואינו דורש פייתון. הבדיקה כאן היא על
+      # הדבר השני: שסגירת החלון מסיימת את התהליך ולא משאירה אותו ברקע.
+      - name: בדיקה שהתהליך מסתיים בסגירה
+        shell: pwsh
+        run: |
+          $p = Start-Process 'dist/OtzariaPluginTranslator.exe' -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { throw "התוכנה נפלה מיד עם ההפעלה (קוד $($p.ExitCode))" }
+          # סגירה מסודרת של החלון, כמו לחיצה על ה-X
+          $p.CloseMainWindow() | Out-Null
+          if (-not $p.WaitForExit(15000)) {
+            $p.Kill()
+            throw 'התהליך המשיך לרוץ ברקע אחרי סגירת החלון'
+          }
+          Write-Output "התהליך הסתיים בסגירה, קוד $($p.ExitCode)"
+
       - uses: actions/upload-artifact@v4
         with:
           name: OtzariaPluginTranslator-${{ steps.ver.outputs.version }}

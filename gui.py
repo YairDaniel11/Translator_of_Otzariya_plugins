@@ -12,7 +12,7 @@ APP_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 RUNTIME = os.path.join(APP_DIR, "i18n_runtime.js")
 CFG     = os.path.join(os.path.expanduser("~"), ".otzaria_translator.json")
 
-VERSION = "1.3"
+VERSION = "1.4"
 
 LANGS = {"אנגלית": ("en", "English"), "צרפתית": ("fr", "French"),
          "ספרדית": ("es", "Spanish"), "רוסית": ("ru", "Russian")}
@@ -48,9 +48,24 @@ class App(tk.Tk):
         self.model      = tk.StringVar(value=cfg.get("model", ""))
         self.strings    = {}
         self.pairs      = {}
+        self.closing    = False
 
         self._build()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.say(f"מתרגם תוספי אוצריא, גרסה {VERSION}")
+
+    def on_close(self):
+        """סגירה מלאה. עובדי הרקע עשויים להיות תקועים בהמתנה לרשת
+        (תרגום או אימות), ולכן חלון שנסגר לא מבטיח שהתהליך מסתיים.
+        לאחר פירוק החלון יוצאים מיד, בלי להמתין להם."""
+        self.closing = True
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
     # ─────────────── פריסה ───────────────
     def _build(self):
@@ -128,7 +143,14 @@ class App(tk.Tk):
 
     # ─────────────── עזר ───────────────
     def say(self, msg):
-        self.log.insert("end", msg + "\n"); self.log.see("end"); self.update_idletasks()
+        # עובד רקע עלול לדווח אחרי שהחלון נסגר — כתיבה ל-widget מפורק
+        # זורקת TclError ומזהמת את הפלט
+        if self.closing: return
+        try:
+            self.log.insert("end", msg + "\n"); self.log.see("end")
+            self.update_idletasks()
+        except tk.TclError:
+            pass
 
     def copy_log(self):
         self.clipboard_clear()
@@ -292,9 +314,14 @@ class App(tk.Tk):
 
         def job():
             self.say("בונה חבילה…")
-            dest, size = core.build_package(
-                d, out, self.pairs, code, RUNTIME,
-                mode=mode, beta_name=beta, progress=self.say)
+            try:
+                dest, size = core.build_package(
+                    d, out, self.pairs, code, RUNTIME,
+                    mode=mode, beta_name=beta, progress=self.say)
+            except Exception as e:
+                self.say(f"הבנייה נכשלה: {e}")
+                messagebox.showerror("הבנייה נכשלה", str(e))
+                return
             ver = core.MIN_VER_AUTO if mode == "auto" else core.MIN_VER_FORCE
             self.say(f"נוצר: {dest}  ({size//1024} KB, minAppVersion {ver})")
             messagebox.showinfo("הושלם", f"החבילה נוצרה:\n{dest}")
