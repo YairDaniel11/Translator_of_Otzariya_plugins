@@ -28,6 +28,86 @@ def save_cfg(d):
     except Exception: pass
 
 
+class BuildDialog(tk.Toplevel):
+    """בחירת גרסת המינימום — ההחלטה היחידה שהמשתמש צריך לקבל.
+
+    השם בשפת היעד נשאל כאן ולא בדיאלוג נפרד: הוא נדרש רק לחבילה
+    הנעולה לשפה, ואוצריא מגבילה אותו ל-14 תווים.
+    """
+
+    def __init__(self, parent, n_pairs, suspect, lang, he_name, pairs):
+        super().__init__(parent)
+        self.title("יצירת החבילה")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.modes, self.name = None, None
+        self.mode_var = tk.StringVar(value="force")
+
+        head = f"התרגום הושלם — {n_pairs} מחרוזות"
+        if suspect:
+            head += f", {suspect} חשודות (מסומנות באדום)"
+        ttk.Label(self, text=head, font=("", 10, "bold")).pack(
+            anchor="e", padx=14, pady=(12, 2))
+        ttk.Label(self, text="לאיזו גרסת אוצריא לבנות?",
+                  foreground="#555").pack(anchor="e", padx=14, pady=(0, 8))
+
+        opts = [
+            ("force", f"נעול ל{lang.upper()} · עובד מגרסה {core.MIN_VER_FORCE}",
+             "הממשק תמיד בשפת היעד, ללא תלות באוצריא. מומלץ לבדיקה."),
+            ("auto", f"לפי שפת אוצריא · דורש {core.MIN_VER_AUTO} ומעלה",
+             "הממשק נקבע לפי שפת אוצריא. שדה השפה קיים רק מגרסה זו."),
+            ("both", "שתי החבילות", "נוצרות שתיהן, זו לצד זו."),
+        ]
+        for val, title, why in opts:
+            f = ttk.Frame(self); f.pack(fill="x", padx=14, pady=2)
+            ttk.Radiobutton(f, text=title, value=val, variable=self.mode_var,
+                            command=self._sync).pack(anchor="e")
+            ttk.Label(f, text=why, foreground="#777").pack(anchor="e", padx=(0, 22))
+
+        self.nf = ttk.Frame(self); self.nf.pack(fill="x", padx=14, pady=(10, 2))
+        ttk.Label(self.nf, text=f"שם החבילה הנעולה (עד {core.MAX_NAME} תווים):").pack(anchor="e")
+        self.name_var = tk.StringVar(value=core.suggest_name(he_name, lang, pairs))
+        ttk.Entry(self.nf, textvariable=self.name_var, width=24,
+                  justify="right").pack(anchor="e", pady=2)
+        ttk.Label(self.nf, text="אוצריא אינה תומכת בשם תלוי-שפה, ולכן הוא קבוע.",
+                  foreground="#777").pack(anchor="e")
+
+        bar = ttk.Frame(self); bar.pack(fill="x", padx=14, pady=12)
+        ttk.Button(bar, text="צור חבילה", command=self.ok).pack(side="right")
+        ttk.Button(bar, text="עצור לעריכה", command=self.destroy).pack(side="right", padx=6)
+
+        self._sync()
+        self.grab_set()
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+        y = parent.winfo_rooty() + 120
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+    def _sync(self):
+        # שם החבילה נחוץ רק כשנבנית חבילה נעולה לשפה
+        needs = self.mode_var.get() in ("force", "both")
+        for w in self.nf.winfo_children():
+            try: w.configure(state="normal" if needs else "disabled")
+            except tk.TclError: pass
+
+    def ok(self):
+        mode = self.mode_var.get()
+        name = self.name_var.get().strip()
+        if mode in ("force", "both"):
+            if not name:
+                messagebox.showerror("", "הזן שם לחבילה.", parent=self); return
+            if len(name) > core.MAX_NAME:
+                messagebox.showerror(
+                    "שם ארוך מדי",
+                    f"'{name}' באורך {len(name)} תווים.\n"
+                    f"אוצריא מגבילה ל-{core.MAX_NAME} ותדחה את ההתקנה.",
+                    parent=self)
+                return
+        self.modes = ["force", "auto"] if mode == "both" else [mode]
+        self.name = name
+        self.destroy()
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -46,6 +126,7 @@ class App(tk.Tk):
         self.lang_name  = tk.StringVar(value=cfg.get("lang", "אנגלית"))
         self.do_verify  = tk.BooleanVar(value=cfg.get("verify", True))
         self.model      = tk.StringVar(value=cfg.get("model", ""))
+        self.scope      = tk.StringVar(value=cfg.get("scope", core.SCOPE_UI))
         self.strings    = {}
         self.pairs      = {}
         self.closing    = False
@@ -95,6 +176,15 @@ class App(tk.Tk):
         ttk.Checkbutton(r, text="אמת מול Google Translate",
                         variable=self.do_verify).pack(side="right", padx=14)
 
+        r3 = ttk.Frame(cfgf); r3.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Label(r3, text="מה לתרגם:").pack(side="right")
+        ttk.Radiobutton(r3, text="ממשק בלבד (כפתורים, תוויות, הודעות)",
+                        value=core.SCOPE_UI, variable=self.scope).pack(side="right", padx=6)
+        ttk.Radiobutton(r3, text="ממשק + תוכן (גם הביוגרפיות והטקסטים)",
+                        value=core.SCOPE_CONTENT, variable=self.scope).pack(side="right", padx=6)
+        ttk.Label(r3, text="— תוכן = הרבה יותר מחרוזות, זמן ועלות",
+                  foreground="#666").pack(side="right", padx=6)
+
         r2 = ttk.Frame(cfgf); r2.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(r2, text="מודל:").pack(side="right")
         self.cb_model = ttk.Combobox(r2, textvariable=self.model, width=34)
@@ -104,15 +194,14 @@ class App(tk.Tk):
         ttk.Label(r2, text="(ריק = בחירה אוטומטית)",
                   foreground="#666").pack(side="right", padx=6)
 
+        #  כפתור אחד לכל התהליך. השלבים (חילוץ, תרגום, אימות) הם
+        #  פירוט פנימי ולא החלטה של המשתמש; ההחלטה היחידה שנותרה —
+        #  לאיזו גרסת אוצריא לבנות — נשאלת בסוף, כשהיא רלוונטית.
         btns = ttk.Frame(self); btns.pack(fill="x", **pad)
-        ttk.Button(btns, text="1 · חלץ מחרוזות", command=self.do_extract).pack(side="right", padx=4)
-        ttk.Button(btns, text="2 · תרגם", command=self.do_translate).pack(side="right", padx=4)
-        self.b_auto  = ttk.Button(btns, text="3 · בנה חבילה (לפי שפת אוצריא · 0.9.97)",
-                                  command=lambda: self.do_build("auto"))
-        self.b_auto.pack(side="right", padx=4)
-        self.b_force = ttk.Button(btns, text="בנה גרסת בדיקה בשפה אחת · 0.9.96",
-                                  command=lambda: self.do_build("force"))
-        self.b_force.pack(side="right", padx=4)
+        self.b_go = ttk.Button(btns, text="תרגם תוסף", command=self.go)
+        self.b_go.pack(side="right", padx=4)
+        self.status = ttk.Label(btns, text="", foreground="#666")
+        self.status.pack(side="right", padx=10)
 
         cols = ("he", "en", "back", "score", "fwd")
         heads = {"he": "מקור", "en": "תרגום", "back": "תרגום חוזר",
@@ -149,7 +238,8 @@ class App(tk.Tk):
         try:
             self.log.insert("end", msg + "\n"); self.log.see("end")
             self.update_idletasks()
-        except tk.TclError:
+        except (tk.TclError, RuntimeError):
+            # RuntimeError: הודעה מעובד רקע אחרי שלולאת האירועים נעצרה
             pass
 
     def copy_log(self):
@@ -166,7 +256,8 @@ class App(tk.Tk):
     def persist(self):
         save_cfg({"plugin_dir": self.plugin_dir.get(), "provider": self.provider.get(),
                   "api_key": self.api_key.get(), "lang": self.lang_name.get(),
-                  "verify": self.do_verify.get(), "model": self.model.get()})
+                  "verify": self.do_verify.get(), "model": self.model.get(),
+                  "scope": self.scope.get()})
 
     def load_models(self):
         key = self.api_key.get().strip()
@@ -232,6 +323,13 @@ class App(tk.Tk):
         threading.Thread(target=wrap, daemon=True).start()
 
     def refresh_table(self, rows):
+        if self.closing: return
+        try:
+            self._fill_table(rows)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _fill_table(self, rows):
         self.tree.delete(*self.tree.get_children())
         for r in rows:
             self.tree.insert("", "end",
@@ -240,91 +338,137 @@ class App(tk.Tk):
                                      "" if r.get("score_fwd") is None else r["score_fwd"]),
                              tags=("suspect",) if r.get("suspect") else ())
 
-    # ─────────────── פעולות ───────────────
-    def do_extract(self):
-        d = self.plugin_dir.get()
-        if not d: messagebox.showwarning("", "בחר תוסף תחילה."); return
-        def job():
-            self.say("מחלץ מחרוזות ממשק…")
-            self.strings = core.extract_strings(d)
-            self.say(f"נמצאו {len(self.strings)} מחרוזות.")
-            self.refresh_table([{"he": s, "en": ""} for s in sorted(self.strings)])
-        self.run_bg(job)
+    # ─────────────── התהליך ───────────────
+    def busy(self, on, text=""):
+        """נועל את הכפתור בזמן עבודה — הרצה כפולה במקביל תשבש את
+        המצב המשותף (strings/pairs) ותייצר חבילה חלקית."""
+        if self.closing: return
+        try:
+            self.b_go.configure(state=("disabled" if on else "normal"))
+            self.status.configure(text=text)
+        except (tk.TclError, RuntimeError):
+            # RuntimeError: הודעה מעובד רקע אחרי שלולאת האירועים נעצרה
+            pass
 
-    def do_translate(self):
-        if not self.strings: self.do_extract(); return
+    def go(self):
+        """כפתור אחד: חילוץ ← תרגום ← אימות ← בחירת גרסה ← בנייה."""
+        d = self.plugin_dir.get()
+        if not d:
+            messagebox.showwarning("", "בחר תוסף תחילה."); return
         key = self.api_key.get().strip()
-        if not key: messagebox.showwarning("", "הזן מפתח API."); return
+        if not key:
+            messagebox.showwarning("", "הזן מפתח API."); return
         self.persist()
         code, target = self.lang()
+        self.busy(True, "עובד…")
+
         def job():
-            self.say(f"מתרגם ל{self.lang_name.get()} באמצעות {self.provider.get()}…")
             try:
-                self.pairs = core.translate(sorted(self.strings), self.provider.get(),
-                                            key, target, progress=self.say,
-                                            model=self.model.get().strip() or None)
-            except Exception as e:
-                self.say(f"התרגום נכשל: {e}")
-                messagebox.showerror(
-                    "התרגום נכשל",
-                    f"{e}\n\nנסה 'רענן רשימת מודלים' ובחר מודל מהרשימה.")
-                return
-            self.say(f"התקבלו {len(self.pairs)} תרגומים.")
-            if not self.pairs:
-                messagebox.showerror("", "לא התקבל אף תרגום — לא נוצרה חבילה.")
-                return
-            rows = [{"he": h, "en": self.pairs.get(h, "")} for h in sorted(self.strings)]
-            self.refresh_table(rows)
-            if self.do_verify.get():
-                self.say("מאמת מול Google Translate…")
-                rows = core.verify(self.pairs, progress=self.say)
+                scope = self.scope.get()
+                self.say("מחלץ מחרוזות ממשק…" if scope == core.SCOPE_UI
+                         else "מחלץ מחרוזות ממשק ותוכן…")
+                self.strings = core.extract_strings(d, scope)
+                self.say(f"נמצאו {len(self.strings)} מחרוזות.")
+                if not self.strings:
+                    self.say("לא נמצאו מחרוזות לתרגום.")
+                    messagebox.showwarning("", "לא נמצאו מחרוזות בתוסף הזה.")
+                    return
+                #  תרגום תוכן הוא בקנה מידה אחר לגמרי — עשרות אלפי
+                #  מחרוזות עלולות לקחת שעות ולעלות בהתאם. לא מתחילים
+                #  בלי שהמשתמש רואה את המספר ומאשר.
+                if len(self.strings) > 600:
+                    if not messagebox.askokcancel(
+                            "היקף גדול",
+                            f"נמצאו {len(self.strings):,} מחרוזות.\n\n"
+                            f"תרגום בהיקף כזה עשוי לקחת זמן רב ולצרוך "
+                            f"מכסת API משמעותית.\n\nלהמשיך?"):
+                        self.say("בוטל לפי בקשת המשתמש.")
+                        return
+                self.refresh_table([{"he": s, "en": ""} for s in sorted(self.strings)])
+
+                self.say(f"מתרגם ל{self.lang_name.get()} באמצעות {self.provider.get()}…")
+                try:
+                    self.pairs = core.translate(
+                        sorted(self.strings), self.provider.get(), key, target,
+                        progress=self.say, model=self.model.get().strip() or None)
+                except Exception as e:
+                    self.say(f"התרגום נכשל: {e}")
+                    messagebox.showerror(
+                        "התרגום נכשל",
+                        f"{e}\n\nנסה 'רענן רשימת מודלים' ובחר מודל מהרשימה.")
+                    return
+                self.say(f"התקבלו {len(self.pairs)} תרגומים.")
+                if not self.pairs:
+                    messagebox.showerror("", "לא התקבל אף תרגום — לא נוצרה חבילה.")
+                    return
+
+                rows = [{"he": h, "en": self.pairs.get(h, "")} for h in sorted(self.strings)]
                 self.refresh_table(rows)
-                n = sum(1 for r in rows if r.get("suspect"))
-                self.say(f"אימות הושלם. {n} מחרוזות חשודות מסומנות באדום.")
+                suspect = 0
+                if self.do_verify.get():
+                    self.say("מאמת מול Google Translate…")
+                    rows = core.verify(self.pairs, progress=self.say)
+                    self.refresh_table(rows)
+                    suspect = sum(1 for r in rows if r.get("suspect"))
+                    self.say(f"אימות הושלם. {suspect} מחרוזות חשודות מסומנות באדום.")
+
+                # הדיאלוג חייב לרוץ על התהליכון הראשי של tkinter
+                self.after(0, lambda: self.choose_and_build(suspect))
+            finally:
+                self.busy(False)
+
         self.run_bg(job)
 
-    def do_build(self, mode):
+    def choose_and_build(self, suspect):
+        """השאלה היחידה שנשארה למשתמש, ורק אחרי שהתרגום בידו."""
+        dlg = BuildDialog(self, len(self.pairs), suspect, self.lang()[0],
+                          self.plugin_name(), self.pairs)
+        self.wait_window(dlg)
+        if not dlg.modes:
+            self.say("הבנייה בוטלה. אפשר לערוך תרגומים בטבלה ולבנות שוב.")
+            self.b_go.configure(text="בנה חבילה", command=self.rebuild)
+            return
+        self.build(dlg.modes, dlg.name)
+
+    def rebuild(self):
+        """בנייה חוזרת אחרי עריכה ידנית בטבלה — בלי לתרגם מחדש."""
+        if not self.pairs:
+            messagebox.showwarning("", "אין תרגום. לחץ 'תרגם תוסף'."); return
+        self.choose_and_build(0)
+
+    def plugin_name(self):
+        m = json.loads(io.open(os.path.join(self.plugin_dir.get(), "manifest.json"),
+                               encoding="utf-8-sig").read())
+        return m.get("name", "")
+
+    def build(self, modes, beta):
         d = self.plugin_dir.get()
-        if not d: messagebox.showwarning("", "בחר תוסף תחילה."); return
-        if not self.pairs: messagebox.showwarning("", "תרגם תחילה."); return
         code, _ = self.lang()
-        m = json.loads(io.open(os.path.join(d, "manifest.json"), encoding="utf-8-sig").read())
-        entry = m.get("entrypoint", "index.html")
         base = self.out_root or os.path.dirname(d.rstrip("\\/"))
         out = os.path.join(base, "פלט-תרגום")
-
-        beta = None
-        if mode == "force":
-            # מציעים אוטומטית שם בשפת היעד; המשתמש רשאי לשנות
-            self.say("מציע שם בשפת היעד…")
-            suggested = core.suggest_name(m.get("name", ""), code, self.pairs)
-            beta = tk.simpledialog.askstring(
-                "שם החבילה",
-                f"אוצריא אינה תומכת בשם תלוי-שפה, ולכן חבילה זו\n"
-                f"נושאת שם קבוע בשפת היעד (עד {core.MAX_NAME} תווים):",
-                initialvalue=suggested, parent=self)
-            if not beta: return
-            beta = beta.strip()
-            if len(beta) > core.MAX_NAME:
-                messagebox.showerror(
-                    "שם ארוך מדי",
-                    f"'{beta}' באורך {len(beta)} תווים.\n"
-                    f"אוצריא מגבילה ל-{core.MAX_NAME} ותדחה את ההתקנה.")
-                return
+        self.busy(True, "בונה…")
 
         def job():
-            self.say("בונה חבילה…")
             try:
-                dest, size = core.build_package(
-                    d, out, self.pairs, code, RUNTIME,
-                    mode=mode, beta_name=beta, progress=self.say)
-            except Exception as e:
-                self.say(f"הבנייה נכשלה: {e}")
-                messagebox.showerror("הבנייה נכשלה", str(e))
-                return
-            ver = core.MIN_VER_AUTO if mode == "auto" else core.MIN_VER_FORCE
-            self.say(f"נוצר: {dest}  ({size//1024} KB, minAppVersion {ver})")
-            messagebox.showinfo("הושלם", f"החבילה נוצרה:\n{dest}")
+                made = []
+                for mode in modes:
+                    self.say(f"בונה חבילה ({mode})…")
+                    try:
+                        dest, size = core.build_package(
+                            d, out, self.pairs, code, RUNTIME,
+                            mode=mode, beta_name=beta, progress=self.say)
+                    except Exception as e:
+                        self.say(f"הבנייה נכשלה: {e}")
+                        messagebox.showerror("הבנייה נכשלה", str(e))
+                        continue
+                    ver = core.MIN_VER_AUTO if mode == "auto" else core.MIN_VER_FORCE
+                    self.say(f"נוצר: {dest}  ({size//1024} KB, minAppVersion {ver})")
+                    made.append(dest)
+                if made:
+                    messagebox.showinfo("הושלם", "נוצר:\n" + "\n".join(made))
+            finally:
+                self.busy(False)
+
         self.run_bg(job)
 
     def edit_cell(self, _ev):
@@ -339,7 +483,52 @@ class App(tk.Tk):
         self.tree.item(item, values=v, tags=())
 
 
+def selftest():
+    """בדיקה ללא מסך, לשימוש ה-CI: ה-EXE הארוז באמת עובד ויוצא.
+
+    בודקת את מה שאריזה שוברת בפועל — שהנתונים נארזו בתוך ה-EXE,
+    שהליבה נטענת, ושהחבילה שנבנית תקינה ומלאה.
+    """
+    import tempfile, zipfile, shutil
+    if not os.path.exists(RUNTIME):
+        print("FAIL: i18n_runtime.js אינו ארוז ב-EXE:", RUNTIME); return 1
+
+    src = os.path.join(tempfile.mkdtemp(), "plug")
+    os.makedirs(os.path.join(src, "data"))
+    io.open(os.path.join(src, "manifest.json"), "w", encoding="utf-8").write(json.dumps(
+        {"id": "t.p", "name": "בדיקה", "version": "1.0",
+         "entrypoint": "index.html"}, ensure_ascii=False))
+    io.open(os.path.join(src, "index.html"), "w", encoding="utf-8").write(
+        '<html dir="rtl"><body><h1>סעיף</h1>'
+        '<input id="q" placeholder="חיפוש שם או תוכן…"></body></html>')
+    io.open(os.path.join(src, "data", "big-data.js"), "w", encoding="utf-8").write(
+        "window.D=[1,2,3];\n")
+
+    found = core.extract_strings(src)
+    if "חיפוש שם או תוכן…" not in found:
+        print("FAIL: אטריביוט placeholder לא חולץ"); return 1
+
+    pairs = {"סעיף": "Se'if", "חיפוש שם או תוכן…": "Search…"}
+    out = tempfile.mkdtemp()
+    dest, size = core.build_package(src, out, pairs, "en", RUNTIME,
+                                    mode="force", beta_name="Test EN")
+    with zipfile.ZipFile(dest) as z:
+        names = set(z.namelist())
+        dic = z.read("i18n/en.js").decode("utf-8")
+    for need in ("data/big-data.js", "index.html", "i18n/en.js", "i18n/i18n.js"):
+        if need not in names:
+            print("FAIL: חסר בחבילה:", need); return 1
+    if '"Se\'if"' not in dic:
+        print("FAIL: המילון אינו מוברח נכון"); return 1
+    shutil.rmtree(out, ignore_errors=True)
+    print("SELFTEST OK — %d מחרוזות, חבילה %d KB, %d קבצים"
+          % (len(found), size // 1024, len(names)))
+    return 0
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     import tkinter.simpledialog
     tk.simpledialog = tkinter.simpledialog
     App().mainloop()

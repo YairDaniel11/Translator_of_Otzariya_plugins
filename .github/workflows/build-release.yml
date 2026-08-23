@@ -75,21 +75,33 @@ jobs:
           Write-Output "exe size: $size"
           if ($size -lt 3MB) { throw "ה-EXE קטן מהצפוי ($size בתים) — הבנייה כנראה חלקית" }
 
-      # ה-EXE עצמאי (onefile) ואינו דורש פייתון. הבדיקה כאן היא על
-      # הדבר השני: שסגירת החלון מסיימת את התהליך ולא משאירה אותו ברקע.
-      - name: בדיקה שהתהליך מסתיים בסגירה
+      # ה-EXE עצמאי (onefile) ואינו דורש פייתון. --selftest מריץ את
+      # כל הזרימה ללא מסך ויוצא: כך נבדק שהנתונים נארזו בתוך ה-EXE,
+      # שהליבה עובדת, ושהתהליך מסתיים מעצמו ולא נשאר תלוי.
+      #
+      # סגירת חלון אמיתית אינה נבדקת כאן במכוון: ל-runner אין דסקטופ
+      # אינטראקטיבי, CloseMainWindow() אינו שולח WM_CLOSE, וכל בדיקה
+      # כזו נכשלת גם כשהתוכנה תקינה לגמרי.
+      - name: בדיקת ה-EXE ללא מסך
+        shell: pwsh
+        run: |
+          $p = Start-Process 'dist/OtzariaPluginTranslator.exe' -ArgumentList '--selftest' `
+                 -RedirectStandardOutput 'selftest.log' -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'ה-EXE לא הסתיים — נתקע' }
+          Get-Content 'selftest.log'
+          if ($p.ExitCode -ne 0) { throw "הבדיקה נכשלה, קוד $($p.ExitCode)" }
+          if (-not (Select-String -Path 'selftest.log' -Pattern 'SELFTEST OK' -Quiet)) {
+            throw 'הבדיקה לא דיווחה הצלחה'
+          }
+
+      - name: בדיקה שהתוכנה נפתחת כחלון ולא קורסת
         shell: pwsh
         run: |
           $p = Start-Process 'dist/OtzariaPluginTranslator.exe' -PassThru
-          Start-Sleep -Seconds 20
+          Start-Sleep -Seconds 25
           if ($p.HasExited) { throw "התוכנה נפלה מיד עם ההפעלה (קוד $($p.ExitCode))" }
-          # סגירה מסודרת של החלון, כמו לחיצה על ה-X
-          $p.CloseMainWindow() | Out-Null
-          if (-not $p.WaitForExit(15000)) {
-            $p.Kill()
-            throw 'התהליך המשיך לרוץ ברקע אחרי סגירת החלון'
-          }
-          Write-Output "התהליך הסתיים בסגירה, קוד $($p.ExitCode)"
+          Stop-Process -Id $p.Id -Force
+          Write-Output 'החלון נפתח ונשאר חי'
 
       - uses: actions/upload-artifact@v4
         with:

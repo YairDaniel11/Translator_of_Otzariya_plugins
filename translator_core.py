@@ -52,12 +52,38 @@ _CODE_HINTS = re.compile(
         \\[nrt"'\\])""", re.X)
 
 
-def _clean(s):
-    s = s.strip()
+#  שברי תגיות וביטויים רגולריים. הם נוצרים כשמחרוזת בקוד מכילה
+#  מירכאות פנימיות, והסריקה קוטעת אותה באמצע — התוצאה נשלחת
+#  לתרגום ומייצרת מפתחות שלא יתאימו לשום טקסט בדף.
+_MARKUP = re.compile(
+    r"(<[a-zA-Z/!]|/?>|=\s*[\"']|\(\?:|\\\\|&[a-z]+;|\$\{|"
+    r"[\"']\s*\+|\+\s*[\"']|"      # שרשור מחרוזות בקוד
+    r"[\"']\s*:\s*[\"']|"          # פריט במילון קוד
+    r"\|)")                        # חלופה בביטוי רגולרי
+
+
+def _unescape_js(s):
+    """הופך תווי בריחה של JS/JSON לתו עצמו.
+
+    בקבצי נתונים הטקסט שמור מוברח (\\u0027 במקום גרש), אבל בדף הוא
+    מוצג כתו רגיל. בלי הפענוח המפתח במילון לא יתאים לשום טקסט.
+    """
+    if "\\" not in s:
+        return s
+    s = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), s)
+    for a, b in (("\\\"", "\""), ("\\'", "'"), ("\\n", " "),
+                 ("\\t", " "), ("\\/", "/"), ("\\\\", "\\")):
+        s = s.replace(a, b)
+    return s
+
+
+def _clean(s, maxlen=140):
+    s = _unescape_js(s).strip()
     if not s or not HEB.search(s):        return None
-    if len(s) > 140:                      return None      # תוכן, לא כיתוב
+    if len(s) > maxlen:                   return None      # תוכן, לא כיתוב
     if s.startswith(("//", "/*", "*", "<!--")): return None
     if re.match(r"^[֐-׿]{1,2}$", s):      return None      # אות בודדת
+    if _MARKUP.search(s):                 return None
 
     if _CODE_HINTS.search(s):             return None
     # רצף של תווים בודדים מופרדים בפסיקים — מפת מקלדת וכדומה
@@ -68,13 +94,34 @@ def _clean(s):
     return s
 
 
-def extract_strings(plugin_dir):
-    """מחזיר {מחרוזת: [קבצים שבהם הופיעה]}"""
+#  היקף החילוץ. "content" פותח גם את תיקיות הנתונים ומרים את תקרת
+#  האורך, ולכן הוא כולל את הביוגרפיות והטקסטים עצמם — הרבה יותר
+#  מחרוזות, ובהתאם יותר זמן ועלות מול המודל.
+SCOPE_UI      = "ui"
+SCOPE_CONTENT = "content"
+
+_CONTENT_SKIP_DIRS = {"__pycache__", "i18n", "fonts", ".git", ".idea"}
+_CONTENT_SKIP_FILES = re.compile(
+    r"(\.min\.|pdf\.worker|mammoth|jszip|libzim|otzaria_plugin\.js$)")
+CONTENT_MAXLEN = 600
+
+
+def extract_strings(plugin_dir, scope=SCOPE_UI):
+    """מחזיר {מחרוזת: [קבצים שבהם הופיעה]}
+
+    scope='ui'      — כיתובי ממשק בלבד: כפתורים, תוויות, הודעות.
+    scope='content' — גם תוכן: תיקיות הנתונים ומשפטים ארוכים.
+    """
+    content = scope == SCOPE_CONTENT
+    skip_dirs = _CONTENT_SKIP_DIRS if content else SKIP_DIRS
+    skip_files = _CONTENT_SKIP_FILES if content else SKIP_FILES
+    maxlen = CONTENT_MAXLEN if content else 140
+
     found = {}
     for root, dirs, files in os.walk(plugin_dir):
-        dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
+        dirs[:] = [x for x in dirs if x not in skip_dirs]
         for f in sorted(files):
-            if not f.endswith((".html", ".js")) or SKIP_FILES.search(f):
+            if not f.endswith((".html", ".js")) or skip_files.search(f):
                 continue
             rel = os.path.relpath(os.path.join(root, f), plugin_dir).replace("\\", "/")
             raw = io.open(os.path.join(root, f), encoding="utf-8", errors="ignore").read()
@@ -83,7 +130,8 @@ def extract_strings(plugin_dir):
             body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
             body = re.sub(r"^\s*//.*$", "", body, flags=re.M)
 
-            cand = re.findall(r">([^<>]{2,140})<", body)
+            L = str(maxlen)
+            cand = re.findall(r">([^<>]{2," + L + r"})<", body)
 
             #  אטריביוטים גלויים, במפורש. הם היו נשמטים: הסריקה
             #  הכללית מזווגת מירכאות לפי הסדר, ו-id="q" בעל התו
@@ -91,16 +139,16 @@ def extract_strings(plugin_dir):
             #  נקרא כ-" placeholder=" ולא כערך עצמו.
             for a in ("placeholder", "title", "aria-label", "alt", "value",
                       "data-label", "data-title"):
-                cand += re.findall(a + r'\s*=\s*"([^"\n]{1,140})"', body)
-                cand += re.findall(a + r"\s*=\s*'([^'\n]{1,140})'", body)
+                cand += re.findall(a + r'\s*=\s*"([^"\n]{1,' + L + r'})"', body)
+                cand += re.findall(a + r"\s*=\s*'([^'\n]{1," + L + r"})'", body)
 
             #  מירכאות: {0,} ולא {2,} — מחרוזת קצרה או ריקה חייבת
             #  להיבלע כזוג, אחרת הזיווג נשאר מוסט לכל אורך השורה.
             for q in ("'", '"', "`"):
-                cand += re.findall(q + r"([^" + q + r"\n]{0,140})" + q, body)
+                cand += re.findall(q + r"([^" + q + r"\n]{0," + L + r"})" + q, body)
 
             for c in cand:
-                c = _clean(c)
+                c = _clean(c, maxlen)
                 if c:
                     found.setdefault(c, [])
                     if rel not in found[c]:
@@ -128,21 +176,50 @@ Return ONLY a JSON object mapping each source string to its translation.
 No commentary, no markdown fences."""
 
 
-def _post_json(url, payload, headers, timeout=120):
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        # גוף התשובה מכיל את הסיבה האמיתית — בלעדיו רואים רק "404"
+#  עומס אצל הספק הוא זמני, ולכן שווה להמתין ולנסות שוב. בלי זה
+#  אצווה שלמה נופלת על 503 חולף, ומחצית הממשק נשארת בעברית.
+RETRY_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
+
+
+def _post_json(url, payload, headers, timeout=120, retries=4, progress=None):
+    import time
+    data = json.dumps(payload).encode("utf-8")
+    last = None
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json", **headers})
         try:
-            body = e.read().decode("utf-8", "replace")
-            msg = json.loads(body).get("error", {}).get("message", body)
-        except Exception:
-            msg = ""
-        raise RuntimeError(f"HTTP {e.code}: {msg[:400]}") from None
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # גוף התשובה מכיל את הסיבה האמיתית — בלעדיו רואים רק "404"
+            try:
+                body = e.read().decode("utf-8", "replace")
+                msg = json.loads(body).get("error", {}).get("message", body)
+            except Exception:
+                msg = ""
+            last = RuntimeError(f"HTTP {e.code}: {msg[:400]}")
+            if e.code not in RETRY_CODES or attempt == retries:
+                raise last from None
+            wait = _retry_after(e) or min(2 ** attempt * 3, 45)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = RuntimeError(f"תקלת רשת: {e}")
+            if attempt == retries:
+                raise last from None
+            wait = min(2 ** attempt * 3, 45)
+        if progress:
+            progress(f"    הספק עמוס ({last}) — ממתין {wait}ש׳ ומנסה שוב")
+        time.sleep(wait)
+    raise last
+
+
+def _retry_after(e):
+    try:
+        v = e.headers.get("retry-after")
+        return min(max(int(float(v)), 1), 60) if v else None
+    except Exception:
+        return None
 
 
 def _get_json(url, headers=None, timeout=60):
@@ -282,16 +359,46 @@ def translate(strings, provider, api_key, target="English", examples=None, chunk
     if progress:
         progress(f"  מודל: {chosen}")
         progress(f"  תורגמו {len(first)}/{len(items)}")
-    out = dict(first_out)
+    out = {k: v for k, v in first_out.items() if v}
 
     for i in range(chunk, len(items), chunk):
         part = items[i:i + chunk]
         try:
-            out.update(fn(part, api_key, target, model=chosen, examples=examples))
+            got = fn(part, api_key, target, model=chosen, examples=examples)
+            out.update({k: v for k, v in got.items() if v})
         except Exception as e:
             if progress: progress(f"  שגיאה באצווה {i//chunk+1}: {e}")
         if progress:
             progress(f"  תורגמו {min(i+chunk, len(items))}/{len(items)}")
+
+    #  סבבי השלמה. אצווה שנפלה — או תשובה חלקית של המודל — השאירה
+    #  עד כאן מחרוזות בלי תרגום, ובלי הסבב הזה הן פשוט נשארות
+    #  בעברית בתוסף הסופי, בשקט. באצוות קטנות יותר, כי תשובה ארוכה
+    #  היא בעצמה סיבה שכיחה לכשל.
+    for rnd, size in enumerate((max(chunk // 3, 10), 8), start=1):
+        missing = [s for s in items if not out.get(s)]
+        if not missing:
+            break
+        if progress:
+            progress(f"  סבב השלמה {rnd}: {len(missing)} מחרוזות ללא תרגום")
+        for i in range(0, len(missing), size):
+            part = missing[i:i + size]
+            try:
+                got = fn(part, api_key, target, model=chosen, examples=examples)
+                out.update({k: v for k, v in got.items() if v})
+            except Exception as e:
+                if progress: progress(f"    לא הושלם: {e}")
+
+    still = [s for s in items if not out.get(s)]
+    if progress:
+        if still:
+            progress(f"  ⚠ {len(still)} מחרוזות נשארו בלי תרגום ויופיעו בעברית:")
+            for s in still[:10]:
+                progress(f"      {s}")
+            if len(still) > 10:
+                progress(f"      … ועוד {len(still) - 10}")
+        else:
+            progress(f"  כל {len(items)} המחרוזות תורגמו")
     return out
 
 
@@ -508,6 +615,9 @@ def suggest_name(he_name, lang="en", pairs=None):
         return f"{lang.upper()} test"[:MAX_NAME]
 
     t = re.sub(r"\s+", " ", t).strip(" .·-")
+    # Google מחזיר לרוב באות קטנה; שם תוסף נראה רשלני כך
+    if t[:1].islower():
+        t = t[0].upper() + t[1:]
     if len(t) <= MAX_NAME:
         return t
 
