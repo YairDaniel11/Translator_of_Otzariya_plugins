@@ -234,6 +234,11 @@ def _post_json(url, payload, headers, timeout=120, retries=4, progress=None):
             last = RuntimeError(f"HTTP {e.code}: {msg[:400]}")
             if e.code not in RETRY_CODES or attempt == retries:
                 raise last from None
+            #  חריגת מכסה אינה תקלה חולפת: המתנה של 13 שניות ארבע
+            #  פעמים רק מאריכה את הריצה בלי סיכוי להצליח. עדיף
+            #  להיכשל מיד, כדי שהמעבר למודל הבא יקרה בלי השתהות.
+            if _QUOTA.search(msg or ""):
+                raise last from None
             # הספק מציין בעצמו מתי לחזור — לכבד את זה עדיף מלנחש,
             # ובחריגת מכסה זה ההבדל בין הצלחה לכשל מיידי נוסף
             wait = _retry_after(e, body) or min(2 ** attempt * 3, 45)
@@ -269,6 +274,9 @@ def _retry_after(e, body=""):
             return min(max(int(float(m.group(1))) + 2, 2), 120)
     return None
 
+
+#  חריגת מכסה, בניגוד לעומס חולף: אין טעם להמתין ולנסות שוב
+_QUOTA = re.compile(r"(quota|billing|exceeded your current)", re.I)
 
 #  שגיאות שמשמעותן "המודל הזה חסום עבורך" — מכסה, אינו קיים, אינו
 #  נתמך, או עמוס גם אחרי הניסיונות החוזרים. במקרים האלה מעבר למודל
@@ -401,8 +409,8 @@ def translate_gemini(strings, api_key, target="English",
     return _parse_json_blob(data["candidates"][0]["content"]["parts"][0]["text"])
 
 
-def translate(strings, provider, api_key, target="English", examples=None, chunk=60,
-              progress=None, model=None):
+def translate(strings, provider, api_key, target="English", examples=None, chunk=40,
+              progress=None, model=None, workers=4):
     """מתרגם באצוות, כדי לא לחרוג ממגבלת התשובה של המודל.
 
     אם לא נמסר model, נבחר אוטומטית מתוך המודלים שהמפתח יכול להריץ.
@@ -418,21 +426,21 @@ def translate(strings, provider, api_key, target="English", examples=None, chunk
     #  מצב המודל הפעיל. המעבר למודל הבא חייב לחול על *כל* הבקשות
     #  ולא רק על הראשונה: מכסה נגמרת באמצע הריצה, ובלי מעבר חי כל
     #  שאר האצוות נופלות על אותה שגיאה והממשק נשאר חצי בעברית.
-    st = {"model": model, "pool": None, "tried": set()}
+    st = {"model": model, "pool": None, "tried": set(), "dead": False}
 
-    def pool():
+    def model_pool():
         """רשימת המודלים הזמינים — נשלפת רק כשצריך אותה בפועל,
         כדי לא לבזבז בקשה כשהמודל שנבחר עובד."""
         if st["pool"] is None:
             try:
                 st["pool"] = list_models(provider, api_key)
             except Exception as e:
-                say(f"    לא ניתן לשלוף רשימת מודלים: {e}")
+                say(f"    לא ניתן לשלוף רשימת מודלים — {e}")
                 st["pool"] = []
         return st["pool"]
 
     def next_model():
-        for m in pool():
+        for m in model_pool():
             if m not in st["tried"]:
                 return m
         return None
@@ -442,58 +450,91 @@ def translate(strings, provider, api_key, target="English", examples=None, chunk
         if not st["model"]:
             raise RuntimeError("לא נמצאו מודלים זמינים למפתח הזה")
 
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    lock = threading.Lock()
+
     def call(part):
         """בקשה אחת, עם מעבר אוטומטי למודל הבא כשהמודל הנוכחי חסום."""
         last = None
-        while st["model"]:
-            st["tried"].add(st["model"])
+        while True:
+            with lock:
+                if st["dead"]:
+                    raise RuntimeError("כל המודלים הזמינים חסומים או נכשלו")
+                cur = st["model"]
+                st["tried"].add(cur)
             try:
-                return fn(part, api_key, target, model=st["model"],
-                          examples=examples)
+                return fn(part, api_key, target, model=cur, examples=examples)
             except Exception as e:
                 last = e
                 if not _model_blocked(e):
                     raise
-                nxt = next_model()
-                if not nxt:
-                    raise RuntimeError(
-                        f"כל המודלים הזמינים חסומים או נכשלו. אחרון: {e}")
-                say(f"    {st['model']} חסום ({str(e)[:90]})")
-                say(f"    עובר אוטומטית ל-{nxt}")
-                st["model"] = nxt
-        raise last or RuntimeError("אין מודל זמין")
+                with lock:
+                    # תהליכון אחר אולי כבר החליף — אז פשוט ננסה שוב
+                    if st["model"] == cur:
+                        nxt = next_model()
+                        if not nxt:
+                            st["dead"] = True
+                            raise RuntimeError(
+                                f"כל המודלים הזמינים חסומים או נכשלו. אחרון: {e}")
+                        say(f"    {cur} חסום ({str(e)[:90]})")
+                        say(f"    עובר אוטומטית ל-{nxt}")
+                        st["model"] = nxt
 
+    #  אצווה ראשונה לבד: היא זו שמאתרת מודל עובד, ואין טעם לשלוח
+    #  שבע בקשות במקביל למודל שאולי חסום מלכתחילה
     first = items[:chunk]
     first_out = call(first)
     say(f"  מודל: {st['model']}")
-    say(f"  תורגמו {len(first)}/{len(items)}")
     out = {k: v for k, v in first_out.items() if v}
+    done = [len(first)]
+    say(f"  תורגמו {done[0]}/{len(items)}")
 
-    for i in range(chunk, len(items), chunk):
-        part = items[i:i + chunk]
-        try:
-            got = call(part)
-            out.update({k: v for k, v in got.items() if v})
-        except Exception as e:
-            say(f"  שגיאה באצווה {i//chunk+1}: {e}")
-        say(f"  תורגמו {min(i+chunk, len(items))}/{len(items)}")
+    #  שאר האצוות במקביל. הן בלתי תלויות לחלוטין, ובטור הזמן הוא
+    #  סכום כל הבקשות — 477 מחרוזות היו 12 בקשות אחת אחרי השנייה.
+    rest = [items[i:i + chunk] for i in range(chunk, len(items), chunk)]
+    if rest:
+        def one(part):
+            try:
+                got = call(part)
+                with lock:
+                    out.update({k: v for k, v in got.items() if v})
+            except Exception as e:
+                say(f"  שגיאה באצווה: {str(e)[:120]}")
+            with lock:
+                done[0] += len(part)
+                say(f"  תורגמו {min(done[0], len(items))}/{len(items)}")
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            list(pool.map(one, rest))
 
     #  סבבי השלמה. אצווה שנפלה — או תשובה חלקית של המודל — השאירה
     #  עד כאן מחרוזות בלי תרגום, ובלי הסבב הזה הן פשוט נשארות
     #  בעברית בתוסף הסופי, בשקט. באצוות קטנות יותר, כי תשובה ארוכה
     #  היא בעצמה סיבה שכיחה לכשל.
     for rnd, size in enumerate((max(chunk // 3, 10), 8), start=1):
+        if st["dead"]:
+            #  אין מודל זמין יותר; סבב נוסף רק יאריך את הריצה בעשרות
+            #  בקשות שכולן נדחות מראש
+            say("  אין מודל זמין — מדלג על סבבי ההשלמה")
+            break
         missing = [s for s in items if not out.get(s)]
         if not missing:
             break
-        say(f"  סבב השלמה {rnd}: {len(missing)} מחרוזות ללא תרגום")
-        for i in range(0, len(missing), size):
-            part = missing[i:i + size]
+        say(f"  סבב השלמה {rnd} — {len(missing)} מחרוזות ללא תרגום")
+        parts = [missing[i:i + size] for i in range(0, len(missing), size)]
+
+        def fill(part):
             try:
                 got = call(part)
-                out.update({k: v for k, v in got.items() if v})
+                with lock:
+                    out.update({k: v for k, v in got.items() if v})
             except Exception as e:
-                say(f"    לא הושלם: {e}")
+                say(f"    לא הושלם: {str(e)[:120]}")
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            list(pool.map(fill, parts))
 
     still = [s for s in items if not out.get(s)]
     if still:
@@ -580,17 +621,22 @@ def verify(pairs, threshold=0.34, progress=None, limit=None):
             row["score"] = round(_similarity(he, back), 2)
         except Exception as e:
             row["back"] = f"(אימות נכשל: {e})"
-        try:
-            fwd = google_back_translate(he, src="he", dest="en")
-            row["score_fwd"] = round(_similarity_en(en, fwd), 2)
-        except Exception:
-            pass
+
+        #  הבדיקה השנייה נחוצה רק כשהראשונה נכשלה: מחרוזת מסומנת
+        #  כחשודה רק אם *שתיהן* נמוכות, ולכן ציון גבוה בבדיקה אחת
+        #  כבר מכריע. זה חוסך כמחצית מקריאות הרשת.
+        if row["score"] is None or row["score"] < threshold:
+            try:
+                fwd = google_back_translate(he, src="he", dest="en")
+                row["score_fwd"] = round(_similarity_en(en, fwd), 2)
+            except Exception:
+                pass
         scores = [s for s in (row["score"], row["score_fwd"]) if s is not None]
         row["suspect"] = bool(scores) and max(scores) < threshold
         return row
 
-    # שתי קריאות רשת לכל מחרוזת; בטור זה ארוך מאוד, ולכן מריצים
-    # במקביל. 8 עובדים — מספיק כדי לקצר משמעותית בלי להיחסם.
+    # קריאות רשת לכל מחרוזת; בטור זה ארוך מאוד, ולכן מריצים במקביל.
+    # 12 עובדים — מקצר משמעותית בלי להיחסם על ידי Google.
     done = [0]
     lock = threading.Lock()
 
@@ -602,7 +648,7 @@ def verify(pairs, threshold=0.34, progress=None, limit=None):
                 progress(f"  אומתו {done[0]}/{len(items)}")
         return r
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         res = list(pool.map(tracked, items))
     if progress:
         progress(f"  אומתו {len(items)}/{len(items)}")

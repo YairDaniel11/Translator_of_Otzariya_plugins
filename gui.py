@@ -12,7 +12,7 @@ APP_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 RUNTIME = os.path.join(APP_DIR, "i18n_runtime.js")
 CFG     = os.path.join(os.path.expanduser("~"), ".otzaria_translator.json")
 
-VERSION = "1.4"
+VERSION = "1.5"
 
 LANGS = {"אנגלית": ("en", "English"), "צרפתית": ("fr", "French"),
          "ספרדית": ("es", "Spanish"), "רוסית": ("ru", "Russian")}
